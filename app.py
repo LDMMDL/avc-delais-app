@@ -3,6 +3,13 @@ import pandas as pd
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List
+import os
+
+pwd = os.environ.get("APP_PASSWORD", "")
+if pwd:
+    p = st.text_input("Mot de passe", type="password")
+    if p != pwd:
+        st.stop()
 
 st.set_page_config(page_title="AVC Hyperaigu – Délais Thrombolyse", layout="centered")
 
