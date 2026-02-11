@@ -35,7 +35,6 @@ GSHEET_WORKSHEET_INTRA = os.environ.get("GOOGLE_SHEET_WORKSHEET_INTRA", "avc_int
 GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("id", "ID enregistrement"),
     ("created_at", "Date enregistrement"),
-    ("case_id", "Case ID"),
     ("care_pathway", "Parcours AVC"),
     ("onset_source", "Source heure début"),
     ("ts_onset_known", "Heure début connue"),
@@ -55,6 +54,7 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("internal_alert_to_arrival_min", "Délai alerte interne->arrivée (min)"),
     ("internal_alert_to_needle_min", "Délai alerte interne->bolus (min)"),
     ("onset_to_needle_min", "Délai début retenu->bolus (min)"),
+    ("commentaire", "Commentaire"),
     ("auto_fix_enabled", "Correction automatique activée"),
     ("auto_correction_applied", "Correction automatique appliquée"),
     ("notes", "Notes"),
@@ -174,6 +174,7 @@ def init_db() -> None:
                 internal_alert_to_arrival_min INTEGER,
                 internal_alert_to_needle_min INTEGER,
                 onset_to_needle_min INTEGER,
+                commentaire TEXT,
                 auto_fix_enabled INTEGER NOT NULL,
                 auto_correction_applied INTEGER NOT NULL,
                 notes TEXT,
@@ -204,6 +205,7 @@ def init_db() -> None:
             "internal_alert_to_arrival_min": "INTEGER",
             "internal_alert_to_needle_min": "INTEGER",
             "onset_to_needle_min": "INTEGER",
+            "commentaire": "TEXT",
             "auto_correction_applied": "INTEGER",
         }
         for col_name, col_type in required_cols.items():
@@ -216,7 +218,7 @@ def init_db() -> None:
 def build_record(row: Dict[str, object]) -> Dict[str, object]:
     return {
         "id": str(uuid4()),
-        "case_id": row.get("case_id", ""),
+        "case_id": "",
         "care_pathway": row.get("care_pathway", ""),
         "onset_source": row.get("onset_source", ""),
         "ts_onset_known": row.get("ts_onset_known", ""),
@@ -236,6 +238,7 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
         "internal_alert_to_arrival_min": row.get("internal_alert_to_arrival_min"),
         "internal_alert_to_needle_min": row.get("internal_alert_to_needle_min"),
         "onset_to_needle_min": row.get("onset_to_needle_min"),
+        "commentaire": row.get("commentaire", ""),
         "auto_fix_enabled": 1,
         "auto_correction_applied": 1 if row.get("auto_correction_applied", False) else 0,
         "notes": row.get("notes", ""),
@@ -255,7 +258,7 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
                 ts_imaging_arrival, ts_imaging_end, ts_needle,
                 dtn_min, door_to_imaging_min, imaging_to_needle_min,
                 samu_to_arrival_min, samu_to_needle_min, internal_alert_to_arrival_min, internal_alert_to_needle_min,
-                onset_to_needle_min,
+                onset_to_needle_min, commentaire,
                 auto_fix_enabled, auto_correction_applied, notes, exported_at, created_at
             ) VALUES (
                 :id, :case_id, :care_pathway, :onset_source,
@@ -264,7 +267,7 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
                 :ts_imaging_arrival, :ts_imaging_end, :ts_needle,
                 :dtn_min, :door_to_imaging_min, :imaging_to_needle_min,
                 :samu_to_arrival_min, :samu_to_needle_min, :internal_alert_to_arrival_min, :internal_alert_to_needle_min,
-                :onset_to_needle_min,
+                :onset_to_needle_min, :commentaire,
                 :auto_fix_enabled, :auto_correction_applied, :notes, :exported_at, :created_at
             )
             """,
@@ -345,7 +348,7 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
                 ts_imaging_arrival, ts_imaging_end, ts_needle,
                 dtn_min, door_to_imaging_min, imaging_to_needle_min,
                 samu_to_arrival_min, samu_to_needle_min, internal_alert_to_arrival_min, internal_alert_to_needle_min,
-                onset_to_needle_min, auto_correction_applied
+                onset_to_needle_min, commentaire, auto_correction_applied
             FROM patient_records
             ORDER BY created_at DESC
             LIMIT ?
@@ -365,16 +368,12 @@ st.caption("Saisie simplifiée avec gestion automatique du passage minuit.")
 
 with st.sidebar:
     st.header("Paramètres")
-    st.write("Utiliser un identifiant pseudonymisé (pas de nom/prénom).")
     st.write(f"Feuille extra-hospitalier: {GSHEET_WORKSHEET_EXTRA}")
     st.write(f"Feuille intra-hospitalier: {GSHEET_WORKSHEET_INTRA}")
     if GSHEET_ID:
         st.success("Google Sheets configuré")
     else:
         st.info("Google Sheets non configuré (fallback SQLite)")
-
-st.subheader("Identifiant (optionnel)")
-case_id = st.text_input("Case ID (pseudonymisé)", value="")
 
 st.subheader("Recueil")
 care_pathway = st.radio(
@@ -565,6 +564,8 @@ if o2n is not None:
     else:
         st.warning(f"4️⃣ Délai global hors fenêtre standard: {o2n} min (> 4h30).")
 
+commentaire = st.text_area("Commentaire (optionnel)", value="", placeholder="Ajouter un commentaire libre...")
+
 st.subheader("Export")
 notes = list(rollover_notes)
 notes.extend(onset_notes)
@@ -572,7 +573,6 @@ notes.append(f"Parcours: {care_pathway}")
 notes.append(f"Mode début: {onset_mode}")
 
 row = {
-    "case_id": case_id,
     "care_pathway": care_pathway,
     "onset_source": onset_source,
     "ts_onset_known": fmt_dt(onset_known_dt),
@@ -584,6 +584,7 @@ row = {
     "ts_imaging_arrival": fmt_dt(resolved_times.get("imaging_arrival")),
     "ts_imaging_end": fmt_dt(resolved_times.get("imaging_end")),
     "ts_needle": fmt_dt(resolved_times.get("needle")),
+    "commentaire": commentaire.strip(),
     **metrics,
     "auto_fix_enabled": True,
     "auto_correction_applied": bool(rollover_notes),
@@ -619,7 +620,6 @@ else:
     display_df = recent_records.rename(
         columns={
             "created_at": "Enregistré le",
-            "case_id": "Case ID",
             "care_pathway": "Parcours",
             "onset_source": "Source début",
             "ts_onset_known": "Début connu",
@@ -639,6 +639,7 @@ else:
             "internal_alert_to_arrival_min": "Alerte interne->Arrivée (min)",
             "internal_alert_to_needle_min": "Alerte interne->Bolus (min)",
             "onset_to_needle_min": "Début->Bolus (min)",
+            "commentaire": "Commentaire",
             "auto_correction_applied": "Correction auto appliquée",
         }
     )
