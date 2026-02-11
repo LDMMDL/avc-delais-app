@@ -29,36 +29,44 @@ st.set_page_config(page_title="AVC Hyperaigu - Délais Thrombolyse", layout="cen
 DB_PATH = os.environ.get("APP_DB_PATH", "data/avc_delais.db")
 DEFAULT_GSHEET_ID = "1ZQMo6j6zJ9G0Pl-rZGh6Oa1wPyV7OSYNb_joSjRdRec"
 GSHEET_ID = os.environ.get("GOOGLE_SHEET_ID", DEFAULT_GSHEET_ID)
-GSHEET_WORKSHEET = os.environ.get("GOOGLE_SHEET_WORKSHEET", "patient_records")
+GSHEET_WORKSHEET_EXTRA = os.environ.get("GOOGLE_SHEET_WORKSHEET_EXTRA", "avc_extra_hospitaliers")
+GSHEET_WORKSHEET_INTRA = os.environ.get("GOOGLE_SHEET_WORKSHEET_INTRA", "avc_intra_hospitaliers")
 
 GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("id", "ID enregistrement"),
     ("created_at", "Date enregistrement"),
     ("case_id", "Case ID"),
-    ("ts_symptom_onset", "Heure début AVC/LKW"),
-    ("ts_arrival", "Heure arrivée"),
-    ("ts_imaging", "Heure imagerie"),
+    ("care_pathway", "Parcours AVC"),
+    ("onset_source", "Source heure début"),
+    ("ts_onset_known", "Heure début connue"),
+    ("ts_onset_unknown", "Heure dernière fois vue normale (LKW)"),
+    ("ts_onset_reference", "Heure début retenue pour calcul"),
+    ("ts_samu_call", "Heure appel SAMU"),
+    ("ts_ed_arrival", "Heure arrivée urgences"),
+    ("ts_neuro_call", "Heure appel neurologue de garde"),
+    ("ts_imaging_arrival", "Heure arrivée IRM/imagerie"),
+    ("ts_imaging_end", "Heure fin IRM/imagerie"),
     ("ts_needle", "Heure bolus rtPA"),
-    ("ts_end_infusion", "Heure fin perfusion"),
-    ("ts_other", "Heure autre"),
-    ("odt_min", "Délai début->arrivée (min)"),
-    ("d2i_min", "Délai arrivée->imagerie (min)"),
-    ("d2n_min", "Délai arrivée->bolus (min)"),
-    ("i2n_min", "Délai imagerie->bolus (min)"),
-    ("onset_to_needle_min", "Délai début->bolus (min)"),
-    ("needle_to_end_min", "Délai bolus->fin perfusion (min)"),
+    ("samu_to_irm_min", "Délai appel SAMU->arrivée IRM (min)"),
+    ("ed_to_neuro_min", "Délai arrivée urgences->appel neurologue (min)"),
+    ("ed_to_irm_min", "Délai arrivée urgences->arrivée IRM (min)"),
+    ("neuro_to_irm_min", "Délai appel neurologue->arrivée IRM (min)"),
+    ("imaging_duration_min", "Durée IRM/imagerie (min)"),
+    ("imaging_end_to_needle_min", "Délai fin IRM/imagerie->bolus (min)"),
+    ("onset_to_needle_min", "Délai début retenu->bolus (min)"),
     ("auto_fix_enabled", "Correction automatique activée"),
     ("notes", "Notes"),
     ("exported_at", "Date export"),
 ]
 
 EVENT_LABELS = {
-    "symptom_onset": "Début AVC / Dernière fois vue normale",
-    "arrival": "Arrivée",
-    "imaging": "Imagerie",
+    "onset_reference": "Début AVC/LKW retenu",
+    "samu_call": "Appel SAMU",
+    "ed_arrival": "Arrivée urgences",
+    "neuro_call": "Appel neurologue de garde",
+    "imaging_arrival": "Arrivée IRM/imagerie",
+    "imaging_end": "Fin IRM/imagerie",
     "needle": "Bolus rtPA",
-    "end_infusion": "Fin de perfusion",
-    "other": "Autre",
 }
 
 
@@ -98,7 +106,6 @@ def build_datetimes_with_rollover(
             continue
 
         current_dt = datetime.combine(base_date, t) + timedelta(days=day_shift)
-
         if previous_dt is not None and current_dt < previous_dt:
             while current_dt < previous_dt:
                 day_shift += 1
@@ -124,6 +131,13 @@ def fmt_dt(x: Optional[datetime]) -> str:
     return "" if x is None else x.strftime("%Y-%m-%d %H:%M")
 
 
+def resolve_single_datetime(base_date: date, raw_time: str) -> Optional[datetime]:
+    parsed = parse_time_hhmm(raw_time)
+    if parsed is None:
+        return None
+    return datetime.combine(base_date, parsed)
+
+
 def get_db_connection() -> sqlite3.Connection:
     db_file = Path(DB_PATH)
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -139,18 +153,24 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS patient_records (
                 id TEXT PRIMARY KEY,
                 case_id TEXT,
-                ts_symptom_onset TEXT,
-                ts_arrival TEXT,
-                ts_imaging TEXT,
+                care_pathway TEXT,
+                onset_source TEXT,
+                ts_onset_known TEXT,
+                ts_onset_unknown TEXT,
+                ts_onset_reference TEXT,
+                ts_samu_call TEXT,
+                ts_ed_arrival TEXT,
+                ts_neuro_call TEXT,
+                ts_imaging_arrival TEXT,
+                ts_imaging_end TEXT,
                 ts_needle TEXT,
-                ts_end_infusion TEXT,
-                ts_other TEXT,
-                odt_min INTEGER,
-                d2i_min INTEGER,
-                d2n_min INTEGER,
-                i2n_min INTEGER,
+                samu_to_irm_min INTEGER,
+                ed_to_neuro_min INTEGER,
+                ed_to_irm_min INTEGER,
+                neuro_to_irm_min INTEGER,
+                imaging_duration_min INTEGER,
+                imaging_end_to_needle_min INTEGER,
                 onset_to_needle_min INTEGER,
-                needle_to_end_min INTEGER,
                 auto_fix_enabled INTEGER NOT NULL,
                 notes TEXT,
                 exported_at TEXT,
@@ -158,6 +178,32 @@ def init_db() -> None:
             )
             """
         )
+
+        existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(patient_records)").fetchall()}
+        required_cols = {
+            "care_pathway": "TEXT",
+            "onset_source": "TEXT",
+            "ts_onset_known": "TEXT",
+            "ts_onset_unknown": "TEXT",
+            "ts_onset_reference": "TEXT",
+            "ts_samu_call": "TEXT",
+            "ts_ed_arrival": "TEXT",
+            "ts_neuro_call": "TEXT",
+            "ts_imaging_arrival": "TEXT",
+            "ts_imaging_end": "TEXT",
+            "ts_needle": "TEXT",
+            "samu_to_irm_min": "INTEGER",
+            "ed_to_neuro_min": "INTEGER",
+            "ed_to_irm_min": "INTEGER",
+            "neuro_to_irm_min": "INTEGER",
+            "imaging_duration_min": "INTEGER",
+            "imaging_end_to_needle_min": "INTEGER",
+            "onset_to_needle_min": "INTEGER",
+        }
+        for col_name, col_type in required_cols.items():
+            if col_name not in existing_cols:
+                conn.execute(f"ALTER TABLE patient_records ADD COLUMN {col_name} {col_type}")
+
         conn.commit()
 
 
@@ -165,18 +211,24 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
     return {
         "id": str(uuid4()),
         "case_id": row.get("case_id", ""),
-        "ts_symptom_onset": row.get("ts_symptom_onset", ""),
-        "ts_arrival": row.get("ts_arrival", ""),
-        "ts_imaging": row.get("ts_imaging", ""),
+        "care_pathway": row.get("care_pathway", ""),
+        "onset_source": row.get("onset_source", ""),
+        "ts_onset_known": row.get("ts_onset_known", ""),
+        "ts_onset_unknown": row.get("ts_onset_unknown", ""),
+        "ts_onset_reference": row.get("ts_onset_reference", ""),
+        "ts_samu_call": row.get("ts_samu_call", ""),
+        "ts_ed_arrival": row.get("ts_ed_arrival", ""),
+        "ts_neuro_call": row.get("ts_neuro_call", ""),
+        "ts_imaging_arrival": row.get("ts_imaging_arrival", ""),
+        "ts_imaging_end": row.get("ts_imaging_end", ""),
         "ts_needle": row.get("ts_needle", ""),
-        "ts_end_infusion": row.get("ts_end_infusion", ""),
-        "ts_other": row.get("ts_other", ""),
-        "odt_min": row.get("odt_min"),
-        "d2i_min": row.get("d2i_min"),
-        "d2n_min": row.get("d2n_min"),
-        "i2n_min": row.get("i2n_min"),
+        "samu_to_irm_min": row.get("samu_to_irm_min"),
+        "ed_to_neuro_min": row.get("ed_to_neuro_min"),
+        "ed_to_irm_min": row.get("ed_to_irm_min"),
+        "neuro_to_irm_min": row.get("neuro_to_irm_min"),
+        "imaging_duration_min": row.get("imaging_duration_min"),
+        "imaging_end_to_needle_min": row.get("imaging_end_to_needle_min"),
         "onset_to_needle_min": row.get("onset_to_needle_min"),
-        "needle_to_end_min": row.get("needle_to_end_min"),
         "auto_fix_enabled": 1,
         "notes": row.get("notes", ""),
         "exported_at": row.get("exported_at", ""),
@@ -189,12 +241,20 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
         conn.execute(
             """
             INSERT INTO patient_records (
-                id, case_id, ts_symptom_onset, ts_arrival, ts_imaging, ts_needle, ts_end_infusion, ts_other,
-                odt_min, d2i_min, d2n_min, i2n_min, onset_to_needle_min, needle_to_end_min,
+                id, case_id, care_pathway, onset_source,
+                ts_onset_known, ts_onset_unknown, ts_onset_reference,
+                ts_samu_call, ts_ed_arrival, ts_neuro_call,
+                ts_imaging_arrival, ts_imaging_end, ts_needle,
+                samu_to_irm_min, ed_to_neuro_min, ed_to_irm_min, neuro_to_irm_min,
+                imaging_duration_min, imaging_end_to_needle_min, onset_to_needle_min,
                 auto_fix_enabled, notes, exported_at, created_at
             ) VALUES (
-                :id, :case_id, :ts_symptom_onset, :ts_arrival, :ts_imaging, :ts_needle, :ts_end_infusion, :ts_other,
-                :odt_min, :d2i_min, :d2n_min, :i2n_min, :onset_to_needle_min, :needle_to_end_min,
+                :id, :case_id, :care_pathway, :onset_source,
+                :ts_onset_known, :ts_onset_unknown, :ts_onset_reference,
+                :ts_samu_call, :ts_ed_arrival, :ts_neuro_call,
+                :ts_imaging_arrival, :ts_imaging_end, :ts_needle,
+                :samu_to_irm_min, :ed_to_neuro_min, :ed_to_irm_min, :neuro_to_irm_min,
+                :imaging_duration_min, :imaging_end_to_needle_min, :onset_to_needle_min,
                 :auto_fix_enabled, :notes, :exported_at, :created_at
             )
             """,
@@ -208,6 +268,7 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
 def _get_gsheet_creds_info() -> Optional[Dict]:
     if "google_service_account" in st.secrets:
         return dict(st.secrets["google_service_account"])
+
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if raw:
         try:
@@ -215,6 +276,12 @@ def _get_gsheet_creds_info() -> Optional[Dict]:
         except json.JSONDecodeError:
             return None
     return None
+
+
+def worksheet_name_from_pathway(care_pathway: str) -> str:
+    if care_pathway == "AVC extra-hospitalier":
+        return GSHEET_WORKSHEET_EXTRA
+    return GSHEET_WORKSHEET_INTRA
 
 
 def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, str]:
@@ -235,13 +302,15 @@ def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, s
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
         sheet = client.open_by_key(GSHEET_ID)
+
+        worksheet_name = worksheet_name_from_pathway(str(record.get("care_pathway", "")))
         gsheet_headers = [label for _, label in GSHEET_COLUMNS]
         gsheet_values = [record.get(key, "") for key, _ in GSHEET_COLUMNS]
 
         try:
-            ws = sheet.worksheet(GSHEET_WORKSHEET)
+            ws = sheet.worksheet(worksheet_name)
         except WorksheetNotFound:
-            ws = sheet.add_worksheet(title=GSHEET_WORKSHEET, rows=2000, cols=len(GSHEET_COLUMNS))
+            ws = sheet.add_worksheet(title=worksheet_name, rows=2000, cols=len(GSHEET_COLUMNS))
 
         header = ws.row_values(1)
         if not header:
@@ -250,7 +319,7 @@ def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, s
             ws.update("A1", [gsheet_headers], value_input_option="RAW")
 
         ws.append_row(gsheet_values, value_input_option="RAW")
-        return True, "OK"
+        return True, f"OK ({worksheet_name})"
     except Exception as exc:
         return False, str(exc)
 
@@ -260,8 +329,12 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
         rows = conn.execute(
             """
             SELECT
-                id, created_at, case_id, ts_symptom_onset, ts_arrival, ts_imaging, ts_needle, ts_end_infusion,
-                odt_min, d2i_min, d2n_min, i2n_min, onset_to_needle_min, needle_to_end_min
+                id, created_at, case_id, care_pathway, onset_source,
+                ts_onset_known, ts_onset_unknown, ts_onset_reference,
+                ts_samu_call, ts_ed_arrival, ts_neuro_call,
+                ts_imaging_arrival, ts_imaging_end, ts_needle,
+                samu_to_irm_min, ed_to_neuro_min, ed_to_irm_min, neuro_to_irm_min,
+                imaging_duration_min, imaging_end_to_needle_min, onset_to_needle_min
             FROM patient_records
             ORDER BY created_at DESC
             LIMIT ?
@@ -277,11 +350,13 @@ init_db()
 # UI
 # -----------------------------
 st.title("AVC hyperaigu - délais thrombolyse")
-st.caption("Saisie simplifiée: une date initiale puis les heures uniquement.")
+st.caption("Saisie simplifiée avec gestion automatique du passage minuit.")
 
 with st.sidebar:
     st.header("Paramètres")
     st.write("Utiliser un identifiant pseudonymisé (pas de nom/prénom).")
+    st.write(f"Feuille extra-hospitalier: {GSHEET_WORKSHEET_EXTRA}")
+    st.write(f"Feuille intra-hospitalier: {GSHEET_WORKSHEET_INTRA}")
     if GSHEET_ID:
         st.success("Google Sheets configuré")
     else:
@@ -290,121 +365,176 @@ with st.sidebar:
 st.subheader("Identifiant (optionnel)")
 case_id = st.text_input("Case ID (pseudonymisé)", value="")
 
-st.subheader("Recueil des horaires")
-reference_date = st.date_input("Date du début AVC ou de la dernière fois vue normale", value=date.today())
-reference_mode = st.radio(
-    "Point de départ",
-    options=["Heure début AVC connue", "Heure vue pour la dernière fois normale (LKW)"],
+st.subheader("Recueil")
+care_pathway = st.radio(
+    "Parcours AVC",
+    options=["AVC extra-hospitalier", "AVC intra-hospitalier"],
     horizontal=True,
 )
+reference_date = st.date_input("Date de référence", value=date.today())
 
-label_reference_time = (
-    "Heure début AVC (HH:MM)"
-    if reference_mode == "Heure début AVC connue"
-    else "Heure dernière fois vue normale (HH:MM)"
-)
+col_onset_1, col_onset_2 = st.columns(2)
+with col_onset_1:
+    t_onset_known = st.text_input("Heure début AVC connue (HH:MM)", value="", placeholder="ex: 08:15")
+with col_onset_2:
+    t_onset_unknown = st.text_input("Heure dernière fois vue normale - LKW (HH:MM)", value="", placeholder="ex: 07:40")
 
-t_symptom = st.text_input(label_reference_time, value="", placeholder="ex: 23:10")
+onset_known_dt = resolve_single_datetime(reference_date, t_onset_known)
+onset_unknown_dt = resolve_single_datetime(reference_date, t_onset_unknown)
 
-col1, col2 = st.columns(2)
-with col1:
-    t_arrival = st.text_input("Heure arrivée (HH:MM)", value="", placeholder="ex: 23:55")
-    t_imaging = st.text_input("Heure imagerie (HH:MM)", value="", placeholder="ex: 00:20")
-with col2:
-    t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 01:05")
-    t_end = st.text_input("Heure fin perfusion (HH:MM)", value="", placeholder="ex: 02:05")
+manual_errors: List[str] = []
+if t_onset_known.strip() and onset_known_dt is None:
+    manual_errors.append("Format invalide pour 'Heure début AVC connue' (attendu HH:MM).")
+if t_onset_unknown.strip() and onset_unknown_dt is None:
+    manual_errors.append("Format invalide pour 'Heure dernière fois vue normale - LKW' (attendu HH:MM).")
+if onset_known_dt is None and onset_unknown_dt is None:
+    manual_errors.append("Renseigner au moins une des deux heures: début connu ou LKW.")
 
-t_other = st.text_input("Heure autre (optionnel, HH:MM)", value="", placeholder="")
+if onset_known_dt is not None:
+    onset_source = "Début AVC connu"
+    onset_reference_raw = t_onset_known
+else:
+    onset_source = "Heure LKW"
+    onset_reference_raw = t_onset_unknown
 
-time_inputs = {
-    "symptom_onset": t_symptom,
-    "arrival": t_arrival,
-    "imaging": t_imaging,
-    "needle": t_needle,
-    "end_infusion": t_end,
-    "other": t_other,
-}
+onset_notes: List[str] = []
+if onset_known_dt is not None and onset_unknown_dt is not None:
+    onset_notes.append("Les deux heures sont renseignées: l'heure début AVC connue est utilisée pour les calculs.")
 
-ordered_events = ["symptom_onset", "arrival", "imaging", "needle", "end_infusion", "other"]
-times_corr, rollover_notes, time_errors = build_datetimes_with_rollover(reference_date, time_inputs, ordered_events)
+if care_pathway == "AVC extra-hospitalier":
+    c1, c2 = st.columns(2)
+    with c1:
+        t_samu_call = st.text_input("Heure appel SAMU (HH:MM)", value="", placeholder="ex: 09:00")
+        t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
+    with c2:
+        t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
+        t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
 
-if time_errors:
-    for err in time_errors:
+    time_inputs = {
+        "onset_reference": onset_reference_raw,
+        "samu_call": t_samu_call,
+        "imaging_arrival": t_imaging_arrival,
+        "imaging_end": t_imaging_end,
+        "needle": t_needle,
+    }
+    ordered_events = ["onset_reference", "samu_call", "imaging_arrival", "imaging_end", "needle"]
+else:
+    c1, c2 = st.columns(2)
+    with c1:
+        t_ed_arrival = st.text_input("Heure arrivée urgences (HH:MM)", value="", placeholder="ex: 09:05")
+        t_neuro_call = st.text_input("Heure appel neurologue de garde (HH:MM)", value="", placeholder="ex: 09:10")
+    with c2:
+        t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
+        t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
+
+    t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
+
+    time_inputs = {
+        "onset_reference": onset_reference_raw,
+        "ed_arrival": t_ed_arrival,
+        "neuro_call": t_neuro_call,
+        "imaging_arrival": t_imaging_arrival,
+        "imaging_end": t_imaging_end,
+        "needle": t_needle,
+    }
+    ordered_events = ["onset_reference", "ed_arrival", "neuro_call", "imaging_arrival", "imaging_end", "needle"]
+
+resolved_times, rollover_notes, time_errors = build_datetimes_with_rollover(reference_date, time_inputs, ordered_events)
+all_errors = manual_errors + time_errors
+
+if all_errors:
+    for err in all_errors:
         st.error(err)
 
+if onset_notes:
+    st.info("\n".join(onset_notes))
+
 st.subheader("Horodatages résolus")
-rows_times = []
-for key in ordered_events:
-    if key == "other" and not times_corr.get("other"):
-        continue
-    rows_times.append({"Étape": EVENT_LABELS[key], "Date/heure": fmt_dt(times_corr.get(key))})
-st.dataframe(pd.DataFrame(rows_times), use_container_width=True, hide_index=True)
+timeline_rows = [{"Étape": EVENT_LABELS[k], "Date/heure": fmt_dt(resolved_times.get(k))} for k in ordered_events]
+st.dataframe(pd.DataFrame(timeline_rows), use_container_width=True, hide_index=True)
 
 if rollover_notes:
     st.info("\n".join(rollover_notes))
 
 metrics = {
-    "odt_min": minutes(times_corr["symptom_onset"], times_corr["arrival"]),
-    "d2i_min": minutes(times_corr["arrival"], times_corr["imaging"]),
-    "d2n_min": minutes(times_corr["arrival"], times_corr["needle"]),
-    "i2n_min": minutes(times_corr["imaging"], times_corr["needle"]),
-    "onset_to_needle_min": minutes(times_corr["symptom_onset"], times_corr["needle"]),
-    "needle_to_end_min": minutes(times_corr["needle"], times_corr["end_infusion"]),
+    "samu_to_irm_min": minutes(resolved_times.get("samu_call"), resolved_times.get("imaging_arrival")),
+    "ed_to_neuro_min": minutes(resolved_times.get("ed_arrival"), resolved_times.get("neuro_call")),
+    "ed_to_irm_min": minutes(resolved_times.get("ed_arrival"), resolved_times.get("imaging_arrival")),
+    "neuro_to_irm_min": minutes(resolved_times.get("neuro_call"), resolved_times.get("imaging_arrival")),
+    "imaging_duration_min": minutes(resolved_times.get("imaging_arrival"), resolved_times.get("imaging_end")),
+    "imaging_end_to_needle_min": minutes(resolved_times.get("imaging_end"), resolved_times.get("needle")),
+    "onset_to_needle_min": minutes(resolved_times.get("onset_reference"), resolved_times.get("needle")),
 }
 
 metric_labels = {
-    "odt_min": "Debut AVC/LKW -> Arrivee (min)",
-    "d2i_min": "Arrivee -> Imagerie (min)",
-    "d2n_min": "Arrivee -> Bolus (min)",
-    "i2n_min": "Imagerie -> Bolus (min)",
-    "onset_to_needle_min": "Debut AVC/LKW -> Bolus (min)",
-    "needle_to_end_min": "Bolus -> Fin perfusion (min)",
+    "samu_to_irm_min": "Appel SAMU -> Arrivée IRM (min)",
+    "ed_to_neuro_min": "Arrivée urgences -> Appel neurologue (min)",
+    "ed_to_irm_min": "Arrivée urgences -> Arrivée IRM (min)",
+    "neuro_to_irm_min": "Appel neurologue -> Arrivée IRM (min)",
+    "imaging_duration_min": "Durée IRM/imagerie (min)",
+    "imaging_end_to_needle_min": "Fin IRM/imagerie -> Bolus (min)",
+    "onset_to_needle_min": "Début retenu -> Bolus (min)",
 }
 
 st.subheader("Délais calculés")
-metric_rows = [{"Délai": metric_labels[k], "Valeur (min)": v} for k, v in metrics.items()]
-st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
+metric_rows = []
+for key, label in metric_labels.items():
+    if metrics[key] is not None:
+        metric_rows.append({"Délai": label, "Valeur (min)": metrics[key]})
+if metric_rows:
+    st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
+else:
+    st.info("Délais non calculables avec les horaires saisis.")
 
 st.subheader("Contrôles de cohérence")
-checks = []
+checks: List[Dict[str, str]] = []
 
 
 def add_check(name: str, ok: bool, detail: str) -> None:
     checks.append({"Contrôle": name, "Statut": "OK" if ok else "À vérifier", "Détail": detail})
 
-if metrics["d2n_min"] is not None:
-    add_check("Arrivée -> Bolus <= 60 min", metrics["d2n_min"] <= 60, f"{metrics['d2n_min']} min")
+if care_pathway == "AVC extra-hospitalier":
+    for a, b in [("samu_call", "imaging_arrival"), ("imaging_arrival", "imaging_end"), ("imaging_end", "needle")]:
+        if resolved_times.get(a) and resolved_times.get(b):
+            add_check(
+                f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}",
+                resolved_times[a] <= resolved_times[b],
+                f"{fmt_dt(resolved_times[a])} -> {fmt_dt(resolved_times[b])}",
+            )
+        else:
+            add_check(f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}", False, "Horaires incomplets")
 else:
-    add_check("Arrivée -> Bolus <= 60 min", False, "Horaires incomplets")
+    for a, b in [("ed_arrival", "neuro_call"), ("neuro_call", "imaging_arrival"), ("imaging_arrival", "imaging_end"), ("imaging_end", "needle")]:
+        if resolved_times.get(a) and resolved_times.get(b):
+            add_check(
+                f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}",
+                resolved_times[a] <= resolved_times[b],
+                f"{fmt_dt(resolved_times[a])} -> {fmt_dt(resolved_times[b])}",
+            )
+        else:
+            add_check(f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}", False, "Horaires incomplets")
 
-if metrics["d2i_min"] is not None:
-    add_check("Arrivée -> Imagerie <= 25 min", metrics["d2i_min"] <= 25, f"{metrics['d2i_min']} min")
-else:
-    add_check("Arrivée -> Imagerie <= 25 min", False, "Horaires incomplets")
-
-for a, b in [("arrival", "imaging"), ("imaging", "needle")]:
-    if times_corr[a] and times_corr[b]:
-        add_check(
-            f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}",
-            times_corr[a] <= times_corr[b],
-            f"{fmt_dt(times_corr[a])} -> {fmt_dt(times_corr[b])}",
-        )
-    else:
-        add_check(f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}", False, "Horaires incomplets")
-
-st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
+if checks:
+    st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
 
 st.subheader("Export")
 notes = list(rollover_notes)
-notes.append(f"Point de départ: {reference_mode}")
+notes.extend(onset_notes)
+notes.append(f"Parcours: {care_pathway}")
+
 row = {
     "case_id": case_id,
-    "ts_symptom_onset": fmt_dt(times_corr.get("symptom_onset")),
-    "ts_arrival": fmt_dt(times_corr.get("arrival")),
-    "ts_imaging": fmt_dt(times_corr.get("imaging")),
-    "ts_needle": fmt_dt(times_corr.get("needle")),
-    "ts_end_infusion": fmt_dt(times_corr.get("end_infusion")),
-    "ts_other": fmt_dt(times_corr.get("other")),
+    "care_pathway": care_pathway,
+    "onset_source": onset_source,
+    "ts_onset_known": fmt_dt(onset_known_dt),
+    "ts_onset_unknown": fmt_dt(onset_unknown_dt),
+    "ts_onset_reference": fmt_dt(resolved_times.get("onset_reference")),
+    "ts_samu_call": fmt_dt(resolved_times.get("samu_call")),
+    "ts_ed_arrival": fmt_dt(resolved_times.get("ed_arrival")),
+    "ts_neuro_call": fmt_dt(resolved_times.get("neuro_call")),
+    "ts_imaging_arrival": fmt_dt(resolved_times.get("imaging_arrival")),
+    "ts_imaging_end": fmt_dt(resolved_times.get("imaging_end")),
+    "ts_needle": fmt_dt(resolved_times.get("needle")),
     **metrics,
     "auto_fix_enabled": True,
     "notes": " | ".join(notes),
@@ -415,11 +545,11 @@ csv = pd.DataFrame([row]).to_csv(index=False).encode("utf-8")
 st.download_button("Télécharger CSV (1 ligne)", data=csv, file_name="avc_delais_thrombolyse.csv", mime="text/csv")
 
 st.subheader("Sauvegarde serveur")
-st.caption("Enregistrement SQLite local + Google Sheets (si configuré).")
+st.caption("Enregistrement SQLite local + Google Sheets (2 onglets: extra/intra).")
 
-can_save = not time_errors and bool(times_corr.get("symptom_onset"))
+can_save = not all_errors and bool(resolved_times.get("onset_reference"))
 if not can_save:
-    st.warning("Renseigner au minimum la date + heure de début AVC/LKW avec un format HH:MM valide.")
+    st.warning("Corriger les champs en erreur pour pouvoir enregistrer.")
 
 if st.button("Enregistrer ce patient", type="primary", disabled=not can_save):
     record = build_record(row)
@@ -428,7 +558,7 @@ if st.button("Enregistrer ce patient", type="primary", disabled=not can_save):
 
     ok_sheet, msg_sheet = save_patient_record_google_sheet(record)
     if ok_sheet:
-        st.success("Données envoyées sur Google Sheets.")
+        st.success(f"Données envoyées sur Google Sheets {msg_sheet}.")
     else:
         st.warning(f"Google Sheets: {msg_sheet}")
 
@@ -440,17 +570,24 @@ else:
         columns={
             "created_at": "Enregistré le",
             "case_id": "Case ID",
-            "ts_symptom_onset": "Début AVC/LKW",
-            "ts_arrival": "Arrivée",
-            "ts_imaging": "Imagerie",
+            "care_pathway": "Parcours",
+            "onset_source": "Source début",
+            "ts_onset_known": "Début connu",
+            "ts_onset_unknown": "LKW",
+            "ts_onset_reference": "Début retenu",
+            "ts_samu_call": "Appel SAMU",
+            "ts_ed_arrival": "Arrivée urgences",
+            "ts_neuro_call": "Appel neuro",
+            "ts_imaging_arrival": "Arrivée IRM",
+            "ts_imaging_end": "Fin IRM",
             "ts_needle": "Bolus",
-            "ts_end_infusion": "Fin perfusion",
-            "odt_min": "Début->Arrivée (min)",
-            "d2i_min": "Arrivée->Imagerie (min)",
-            "d2n_min": "Arrivée->Bolus (min)",
-            "i2n_min": "Imagerie->Bolus (min)",
+            "samu_to_irm_min": "SAMU->IRM (min)",
+            "ed_to_neuro_min": "Urgences->Neuro (min)",
+            "ed_to_irm_min": "Urgences->IRM (min)",
+            "neuro_to_irm_min": "Neuro->IRM (min)",
+            "imaging_duration_min": "Durée IRM (min)",
+            "imaging_end_to_needle_min": "Fin IRM->Bolus (min)",
             "onset_to_needle_min": "Début->Bolus (min)",
-            "needle_to_end_min": "Bolus->Fin (min)",
         }
     )
     st.write(f"{len(display_df)} derniers enregistrements")
