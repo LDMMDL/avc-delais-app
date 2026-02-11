@@ -45,6 +45,7 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("ts_onset_known", "Heure début connue"),
     ("ts_onset_unknown", "Heure dernière fois vue normale"),
     ("ts_onset_reference", "Heure début retenue pour le calcul"),
+    ("other_hospital_name", "Nom de l'hôpital appelant"),
     ("ts_samu_call", "Heure appel SAMU"),
     ("ts_other_hospital_call", "Heure appel d'un autre hôpital"),
     ("ts_ed_arrival", "Heure arrivée urgences"),
@@ -171,6 +172,7 @@ def init_db() -> None:
                 ts_onset_known TEXT,
                 ts_onset_unknown TEXT,
                 ts_onset_reference TEXT,
+                other_hospital_name TEXT,
                 ts_samu_call TEXT,
                 ts_other_hospital_call TEXT,
                 ts_ed_arrival TEXT,
@@ -207,6 +209,7 @@ def init_db() -> None:
             "ts_onset_known": "TEXT",
             "ts_onset_unknown": "TEXT",
             "ts_onset_reference": "TEXT",
+            "other_hospital_name": "TEXT",
             "ts_samu_call": "TEXT",
             "ts_other_hospital_call": "TEXT",
             "ts_ed_arrival": "TEXT",
@@ -245,6 +248,7 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
         "ts_onset_known": row.get("ts_onset_known", ""),
         "ts_onset_unknown": row.get("ts_onset_unknown", ""),
         "ts_onset_reference": row.get("ts_onset_reference", ""),
+        "other_hospital_name": row.get("other_hospital_name", ""),
         "ts_samu_call": row.get("ts_samu_call", ""),
         "ts_other_hospital_call": row.get("ts_other_hospital_call", ""),
         "ts_ed_arrival": row.get("ts_ed_arrival", ""),
@@ -279,7 +283,7 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
             """
             INSERT INTO patient_records (
                 id, case_id, care_pathway, onset_source,
-                ts_onset_known, ts_onset_unknown, ts_onset_reference,
+                ts_onset_known, ts_onset_unknown, ts_onset_reference, other_hospital_name,
                 ts_samu_call, ts_other_hospital_call, ts_ed_arrival, ts_neuro_call,
                 ts_irm_arrival, ts_imaging_start, ts_imaging_arrival, ts_imaging_end, ts_needle,
                 dtn_min, door_to_imaging_min, imaging_to_needle_min,
@@ -289,7 +293,7 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
                 auto_fix_enabled, auto_correction_applied, notes, exported_at, created_at
             ) VALUES (
                 :id, :case_id, :care_pathway, :onset_source,
-                :ts_onset_known, :ts_onset_unknown, :ts_onset_reference,
+                :ts_onset_known, :ts_onset_unknown, :ts_onset_reference, :other_hospital_name,
                 :ts_samu_call, :ts_other_hospital_call, :ts_ed_arrival, :ts_neuro_call,
                 :ts_irm_arrival, :ts_imaging_start, :ts_imaging_arrival, :ts_imaging_end, :ts_needle,
                 :dtn_min, :door_to_imaging_min, :imaging_to_needle_min,
@@ -373,7 +377,7 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
             """
             SELECT
                 id, created_at, case_id, care_pathway, onset_source,
-                ts_onset_known, ts_onset_unknown, ts_onset_reference,
+                ts_onset_known, ts_onset_unknown, ts_onset_reference, other_hospital_name,
                 ts_samu_call, ts_other_hospital_call, ts_ed_arrival, ts_neuro_call,
                 ts_irm_arrival, ts_imaging_start, ts_imaging_end, ts_needle,
                 dtn_min, door_to_imaging_min, imaging_to_needle_min,
@@ -413,6 +417,10 @@ care_pathway = st.radio(
     options=[PATHWAY_SAMU, PATHWAY_INTRA, PATHWAY_OTHER],
     horizontal=True,
 )
+other_hospital_name = ""
+if care_pathway == PATHWAY_OTHER:
+    other_hospital_name = st.text_input("Nom de l'hôpital appelant", value="", placeholder="ex: CHU de ...")
+
 reference_date = st.date_input("Date de référence", value=date.today())
 onset_mode = st.radio(
     "Heure de début disponible",
@@ -611,6 +619,7 @@ row = {
     "ts_onset_known": fmt_dt(onset_known_dt),
     "ts_onset_unknown": fmt_dt(onset_unknown_dt),
     "ts_onset_reference": fmt_dt(resolved_times.get("onset_reference")),
+    "other_hospital_name": other_hospital_name.strip(),
     "ts_samu_call": fmt_dt(resolved_times.get("samu_call")),
     "ts_other_hospital_call": fmt_dt(resolved_times.get("other_hospital_call")),
     "ts_ed_arrival": fmt_dt(resolved_times.get("ed_arrival")),
@@ -660,6 +669,7 @@ else:
             "ts_onset_known": "Début connu",
             "ts_onset_unknown": "Dernière fois vue normale",
             "ts_onset_reference": "Début retenu",
+            "other_hospital_name": "Hôpital appelant",
             "ts_samu_call": "Appel SAMU",
             "ts_other_hospital_call": "Appel autre hôpital",
             "ts_ed_arrival": "Arrivée urgences",
