@@ -39,8 +39,8 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("care_pathway", "Parcours AVC"),
     ("onset_source", "Source heure début"),
     ("ts_onset_known", "Heure début connue"),
-    ("ts_onset_unknown", "Heure dernière fois vue normale (LKW)"),
-    ("ts_onset_reference", "Heure début retenue pour calcul"),
+    ("ts_onset_unknown", "Heure dernière fois vue normale"),
+    ("ts_onset_reference", "Heure début retenue pour le calcul"),
     ("ts_samu_call", "Heure appel SAMU"),
     ("ts_ed_arrival", "Heure arrivée urgences"),
     ("ts_neuro_call", "Heure appel neurologue de garde"),
@@ -60,7 +60,7 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
 ]
 
 EVENT_LABELS = {
-    "onset_reference": "Début AVC/LKW retenu",
+    "onset_reference": "Début AVC/dernière fois vue normale retenu",
     "samu_call": "Appel SAMU",
     "ed_arrival": "Arrivée urgences",
     "neuro_call": "Appel neurologue de garde",
@@ -372,43 +372,45 @@ care_pathway = st.radio(
     horizontal=True,
 )
 reference_date = st.date_input("Date de référence", value=date.today())
+onset_mode = st.radio(
+    "Heure de début disponible",
+    options=["Heure début AVC connue", "Heure début inconnue (utiliser dernière fois vue normale)"],
+    horizontal=True,
+)
 
-col_onset_1, col_onset_2 = st.columns(2)
-with col_onset_1:
+t_onset_known = ""
+t_onset_unknown = ""
+if onset_mode == "Heure début AVC connue":
     t_onset_known = st.text_input("Heure début AVC connue (HH:MM)", value="", placeholder="ex: 08:15")
-with col_onset_2:
-    t_onset_unknown = st.text_input("Heure dernière fois vue normale - LKW (HH:MM)", value="", placeholder="ex: 07:40")
+else:
+    t_onset_unknown = st.text_input(
+        "Heure dernière fois vue normale (HH:MM)",
+        value="",
+        placeholder="ex: 07:40",
+    )
 
 onset_known_dt = resolve_single_datetime(reference_date, t_onset_known)
 onset_unknown_dt = resolve_single_datetime(reference_date, t_onset_unknown)
 
 manual_errors: List[str] = []
-if t_onset_known.strip() and onset_known_dt is None:
-    manual_errors.append("Format invalide pour 'Heure début AVC connue' (attendu HH:MM).")
-if t_onset_unknown.strip() and onset_unknown_dt is None:
-    manual_errors.append("Format invalide pour 'Heure dernière fois vue normale - LKW' (attendu HH:MM).")
-if onset_known_dt is None and onset_unknown_dt is None:
-    manual_errors.append("Renseigner au moins une des deux heures: début connu ou LKW.")
-
-if onset_known_dt is not None:
+if onset_mode == "Heure début AVC connue":
+    if onset_known_dt is None:
+        manual_errors.append("Renseigner une heure valide pour 'Heure début AVC connue' (HH:MM).")
     onset_source = "Début AVC connu"
     onset_reference_raw = t_onset_known
 else:
-    onset_source = "Heure LKW"
+    if onset_unknown_dt is None:
+        manual_errors.append("Renseigner une heure valide pour 'Heure dernière fois vue normale' (HH:MM).")
+    onset_source = "Heure dernière fois vue normale"
     onset_reference_raw = t_onset_unknown
 
 onset_notes: List[str] = []
-if onset_known_dt is not None and onset_unknown_dt is not None:
-    onset_notes.append("Les deux heures sont renseignées: l'heure début AVC connue est utilisée pour les calculs.")
 
 if care_pathway == "AVC extra-hospitalier":
-    c1, c2 = st.columns(2)
-    with c1:
-        t_samu_call = st.text_input("Heure appel SAMU (HH:MM)", value="", placeholder="ex: 09:00")
-        t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
-    with c2:
-        t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
-        t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
+    t_samu_call = st.text_input("Heure appel SAMU (HH:MM)", value="", placeholder="ex: 09:00")
+    t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
+    t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
+    t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
 
     time_inputs = {
         "onset_reference": onset_reference_raw,
@@ -419,14 +421,10 @@ if care_pathway == "AVC extra-hospitalier":
     }
     ordered_events = ["onset_reference", "samu_call", "imaging_arrival", "imaging_end", "needle"]
 else:
-    c1, c2 = st.columns(2)
-    with c1:
-        t_ed_arrival = st.text_input("Heure arrivée urgences (HH:MM)", value="", placeholder="ex: 09:05")
-        t_neuro_call = st.text_input("Heure appel neurologue de garde (HH:MM)", value="", placeholder="ex: 09:10")
-    with c2:
-        t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
-        t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
-
+    t_ed_arrival = st.text_input("Heure arrivée urgences (HH:MM)", value="", placeholder="ex: 09:05")
+    t_neuro_call = st.text_input("Heure appel neurologue de garde (HH:MM)", value="", placeholder="ex: 09:10")
+    t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
+    t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
     t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
 
     time_inputs = {
@@ -521,6 +519,7 @@ st.subheader("Export")
 notes = list(rollover_notes)
 notes.extend(onset_notes)
 notes.append(f"Parcours: {care_pathway}")
+notes.append(f"Mode début: {onset_mode}")
 
 row = {
     "case_id": case_id,
@@ -573,7 +572,7 @@ else:
             "care_pathway": "Parcours",
             "onset_source": "Source début",
             "ts_onset_known": "Début connu",
-            "ts_onset_unknown": "LKW",
+            "ts_onset_unknown": "Dernière fois vue normale",
             "ts_onset_reference": "Début retenu",
             "ts_samu_call": "Appel SAMU",
             "ts_ed_arrival": "Arrivée urgences",
