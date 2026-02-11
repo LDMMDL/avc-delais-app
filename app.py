@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List
 import os
+import sqlite3
+from pathlib import Path
+from uuid import uuid4
 
 pwd = os.environ.get("APP_PASSWORD", "")
 if pwd:
@@ -12,6 +14,8 @@ if pwd:
         st.stop()
 
 st.set_page_config(page_title="AVC Hyperaigu – Délais Thrombolyse", layout="centered")
+
+DB_PATH = os.environ.get("APP_DB_PATH", "data/avc_delais.db")
 
 # -----------------------------
 # Helpers temps / corrections
@@ -81,6 +85,102 @@ def minutes(a: Optional[datetime], b: Optional[datetime]) -> Optional[int]:
 
 def fmt_dt(x: Optional[datetime]) -> str:
     return "" if x is None else x.strftime("%Y-%m-%d %H:%M")
+
+def get_db_connection() -> sqlite3.Connection:
+    db_file = Path(DB_PATH)
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_file, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db() -> None:
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS patient_records (
+                id TEXT PRIMARY KEY,
+                case_id TEXT,
+                ts_symptom_onset TEXT,
+                ts_arrival TEXT,
+                ts_imaging TEXT,
+                ts_needle TEXT,
+                ts_end_infusion TEXT,
+                ts_other TEXT,
+                odt_min INTEGER,
+                d2i_min INTEGER,
+                d2n_min INTEGER,
+                i2n_min INTEGER,
+                onset_to_needle_min INTEGER,
+                needle_to_end_min INTEGER,
+                auto_fix_enabled INTEGER NOT NULL,
+                notes TEXT,
+                exported_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+def save_patient_record(row: Dict[str, object]) -> str:
+    record_id = str(uuid4())
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    db_row = {
+        "id": record_id,
+        "case_id": row.get("case_id", ""),
+        "ts_symptom_onset": row.get("ts_symptom_onset", ""),
+        "ts_arrival": row.get("ts_arrival", ""),
+        "ts_imaging": row.get("ts_imaging", ""),
+        "ts_needle": row.get("ts_needle", ""),
+        "ts_end_infusion": row.get("ts_end_infusion", ""),
+        "ts_other": row.get("ts_other", ""),
+        "odt_min": row.get("ODT (Onset→Door) min"),
+        "d2i_min": row.get("D2I (Door→Imaging) min"),
+        "d2n_min": row.get("D2N (Door→Needle) min"),
+        "i2n_min": row.get("I2N (Imaging→Needle) min"),
+        "onset_to_needle_min": row.get("Onset→Needle min"),
+        "needle_to_end_min": row.get("Needle→End min"),
+        "auto_fix_enabled": 1 if row.get("auto_fix_enabled", False) else 0,
+        "notes": row.get("notes", ""),
+        "exported_at": row.get("exported_at", ""),
+        "created_at": now,
+    }
+
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO patient_records (
+                id, case_id, ts_symptom_onset, ts_arrival, ts_imaging, ts_needle, ts_end_infusion, ts_other,
+                odt_min, d2i_min, d2n_min, i2n_min, onset_to_needle_min, needle_to_end_min,
+                auto_fix_enabled, notes, exported_at, created_at
+            ) VALUES (
+                :id, :case_id, :ts_symptom_onset, :ts_arrival, :ts_imaging, :ts_needle, :ts_end_infusion, :ts_other,
+                :odt_min, :d2i_min, :d2n_min, :i2n_min, :onset_to_needle_min, :needle_to_end_min,
+                :auto_fix_enabled, :notes, :exported_at, :created_at
+            )
+            """,
+            db_row,
+        )
+        conn.commit()
+
+    return record_id
+
+def load_recent_records(limit: int = 50) -> pd.DataFrame:
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id, created_at, case_id, ts_symptom_onset, ts_arrival, ts_imaging, ts_needle, ts_end_infusion,
+                odt_min, d2i_min, d2n_min, i2n_min, onset_to_needle_min, needle_to_end_min
+            FROM patient_records
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+init_db()
 
 # -----------------------------
 # UI
@@ -210,4 +310,15 @@ df_export = pd.DataFrame([row])
 csv = df_export.to_csv(index=False).encode("utf-8")
 st.download_button("Télécharger CSV (1 ligne)", data=csv, file_name="avc_delais_thrombolyse.csv", mime="text/csv")
 
+st.subheader("Sauvegarde serveur")
+st.caption("Cette sauvegarde écrit dans une base SQLite côté serveur. Selon l'hébergeur, la persistance peut être temporaire.")
+if st.button("Enregistrer ce patient dans la base", type="primary"):
+    record_id = save_patient_record(row)
+    st.success(f"Données enregistrées. ID: {record_id}")
 
+recent_records = load_recent_records(limit=20)
+if recent_records.empty:
+    st.info("Aucun enregistrement sauvegardé pour le moment.")
+else:
+    st.write(f"{len(recent_records)} derniers enregistrements")
+    st.dataframe(recent_records, use_container_width=True, hide_index=True)
