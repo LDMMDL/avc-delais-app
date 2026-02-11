@@ -4,8 +4,18 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple, List
 import os
 import sqlite3
+import json
 from pathlib import Path
 from uuid import uuid4
+
+try:
+    import gspread
+    from gspread.exceptions import WorksheetNotFound
+    from google.oauth2.service_account import Credentials
+except Exception:
+    gspread = None
+    WorksheetNotFound = Exception
+    Credentials = None
 
 pwd = os.environ.get("APP_PASSWORD", "")
 if pwd:
@@ -16,6 +26,30 @@ if pwd:
 st.set_page_config(page_title="AVC Hyperaigu – Délais Thrombolyse", layout="centered")
 
 DB_PATH = os.environ.get("APP_DB_PATH", "data/avc_delais.db")
+DEFAULT_GSHEET_ID = "1ZQMo6j6zJ9G0Pl-rZGh6Oa1wPyV7OSYNb_joSjRdRec"
+GSHEET_ID = os.environ.get("GOOGLE_SHEET_ID", DEFAULT_GSHEET_ID)
+GSHEET_WORKSHEET = os.environ.get("GOOGLE_SHEET_WORKSHEET", "patient_records")
+
+SHEET_COLUMNS = [
+    "id",
+    "created_at",
+    "case_id",
+    "ts_symptom_onset",
+    "ts_arrival",
+    "ts_imaging",
+    "ts_needle",
+    "ts_end_infusion",
+    "ts_other",
+    "odt_min",
+    "d2i_min",
+    "d2n_min",
+    "i2n_min",
+    "onset_to_needle_min",
+    "needle_to_end_min",
+    "auto_fix_enabled",
+    "notes",
+    "exported_at",
+]
 
 # -----------------------------
 # Helpers temps / corrections
@@ -121,12 +155,9 @@ def init_db() -> None:
         )
         conn.commit()
 
-def save_patient_record(row: Dict[str, object]) -> str:
-    record_id = str(uuid4())
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    db_row = {
-        "id": record_id,
+def build_record(row: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "id": str(uuid4()),
         "case_id": row.get("case_id", ""),
         "ts_symptom_onset": row.get("ts_symptom_onset", ""),
         "ts_arrival": row.get("ts_arrival", ""),
@@ -143,8 +174,10 @@ def save_patient_record(row: Dict[str, object]) -> str:
         "auto_fix_enabled": 1 if row.get("auto_fix_enabled", False) else 0,
         "notes": row.get("notes", ""),
         "exported_at": row.get("exported_at", ""),
-        "created_at": now,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+def save_patient_record_sqlite(record: Dict[str, object]) -> str:
 
     with get_db_connection() as conn:
         conn.execute(
@@ -159,11 +192,54 @@ def save_patient_record(row: Dict[str, object]) -> str:
                 :auto_fix_enabled, :notes, :exported_at, :created_at
             )
             """,
-            db_row,
+            record,
         )
         conn.commit()
 
-    return record_id
+    return str(record["id"])
+
+def _get_gsheet_creds_info() -> Optional[Dict]:
+    if "google_service_account" in st.secrets:
+        return dict(st.secrets["google_service_account"])
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, str]:
+    if not GSHEET_ID:
+        return False, "GOOGLE_SHEET_ID non configuré"
+    if gspread is None or Credentials is None:
+        return False, "Dépendances Google Sheets manquantes"
+
+    creds_info = _get_gsheet_creds_info()
+    if not creds_info:
+        return False, "Credentials service account introuvables"
+
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(GSHEET_ID)
+        try:
+            ws = sheet.worksheet(GSHEET_WORKSHEET)
+        except WorksheetNotFound:
+            ws = sheet.add_worksheet(title=GSHEET_WORKSHEET, rows=2000, cols=len(SHEET_COLUMNS))
+
+        header = ws.row_values(1)
+        if not header:
+            ws.append_row(SHEET_COLUMNS, value_input_option="RAW")
+
+        ws.append_row([record.get(col, "") for col in SHEET_COLUMNS], value_input_option="RAW")
+        return True, "OK"
+    except Exception as exc:
+        return False, str(exc)
 
 def load_recent_records(limit: int = 50) -> pd.DataFrame:
     with get_db_connection() as conn:
@@ -194,6 +270,10 @@ with st.sidebar:
     st.write("Ordre logique attendu : symptômes → arrivée → imagerie → bolus → fin perfusion.")
     st.divider()
     st.write("Conseil : utiliser un identifiant pseudonymisé (pas de nom/prénom).")
+    if GSHEET_ID:
+        st.success("Google Sheets configuré")
+    else:
+        st.info("Google Sheets non configuré (fallback SQLite)")
 
 st.subheader("Identifiant (optionnel)")
 case_id = st.text_input("Case ID (pseudonymisé)", value="")
@@ -311,10 +391,17 @@ csv = df_export.to_csv(index=False).encode("utf-8")
 st.download_button("Télécharger CSV (1 ligne)", data=csv, file_name="avc_delais_thrombolyse.csv", mime="text/csv")
 
 st.subheader("Sauvegarde serveur")
-st.caption("Cette sauvegarde écrit dans une base SQLite côté serveur. Selon l'hébergeur, la persistance peut être temporaire.")
-if st.button("Enregistrer ce patient dans la base", type="primary"):
-    record_id = save_patient_record(row)
-    st.success(f"Données enregistrées. ID: {record_id}")
+st.caption("Enregistrement SQLite local + Google Sheets (si configuré).")
+if st.button("Enregistrer ce patient", type="primary"):
+    record = build_record(row)
+    record_id = save_patient_record_sqlite(record)
+    st.success(f"Données enregistrées (SQLite). ID: {record_id}")
+
+    ok_sheet, msg_sheet = save_patient_record_google_sheet(record)
+    if ok_sheet:
+        st.success("Données envoyées sur Google Sheets.")
+    else:
+        st.warning(f"Google Sheets: {msg_sheet}")
 
 recent_records = load_recent_records(limit=20)
 if recent_records.empty:
