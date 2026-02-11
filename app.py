@@ -31,25 +31,25 @@ DEFAULT_GSHEET_ID = "1ZQMo6j6zJ9G0Pl-rZGh6Oa1wPyV7OSYNb_joSjRdRec"
 GSHEET_ID = os.environ.get("GOOGLE_SHEET_ID", DEFAULT_GSHEET_ID)
 GSHEET_WORKSHEET = os.environ.get("GOOGLE_SHEET_WORKSHEET", "patient_records")
 
-SHEET_COLUMNS = [
-    "id",
-    "created_at",
-    "case_id",
-    "ts_symptom_onset",
-    "ts_arrival",
-    "ts_imaging",
-    "ts_needle",
-    "ts_end_infusion",
-    "ts_other",
-    "odt_min",
-    "d2i_min",
-    "d2n_min",
-    "i2n_min",
-    "onset_to_needle_min",
-    "needle_to_end_min",
-    "auto_fix_enabled",
-    "notes",
-    "exported_at",
+GSHEET_COLUMNS: List[Tuple[str, str]] = [
+    ("id", "ID enregistrement"),
+    ("created_at", "Date enregistrement"),
+    ("case_id", "Case ID"),
+    ("ts_symptom_onset", "Heure début AVC/LKW"),
+    ("ts_arrival", "Heure arrivée"),
+    ("ts_imaging", "Heure imagerie"),
+    ("ts_needle", "Heure bolus rtPA"),
+    ("ts_end_infusion", "Heure fin perfusion"),
+    ("ts_other", "Heure autre"),
+    ("odt_min", "Délai début->arrivée (min)"),
+    ("d2i_min", "Délai arrivée->imagerie (min)"),
+    ("d2n_min", "Délai arrivée->bolus (min)"),
+    ("i2n_min", "Délai imagerie->bolus (min)"),
+    ("onset_to_needle_min", "Délai début->bolus (min)"),
+    ("needle_to_end_min", "Délai bolus->fin perfusion (min)"),
+    ("auto_fix_enabled", "Correction automatique activée"),
+    ("notes", "Notes"),
+    ("exported_at", "Date export"),
 ]
 
 EVENT_LABELS = {
@@ -235,17 +235,21 @@ def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, s
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
         sheet = client.open_by_key(GSHEET_ID)
+        gsheet_headers = [label for _, label in GSHEET_COLUMNS]
+        gsheet_values = [record.get(key, "") for key, _ in GSHEET_COLUMNS]
 
         try:
             ws = sheet.worksheet(GSHEET_WORKSHEET)
         except WorksheetNotFound:
-            ws = sheet.add_worksheet(title=GSHEET_WORKSHEET, rows=2000, cols=len(SHEET_COLUMNS))
+            ws = sheet.add_worksheet(title=GSHEET_WORKSHEET, rows=2000, cols=len(GSHEET_COLUMNS))
 
         header = ws.row_values(1)
         if not header:
-            ws.append_row(SHEET_COLUMNS, value_input_option="RAW")
+            ws.append_row(gsheet_headers, value_input_option="RAW")
+        elif header != gsheet_headers:
+            ws.update("A1", [gsheet_headers], value_input_option="RAW")
 
-        ws.append_row([record.get(col, "") for col in SHEET_COLUMNS], value_input_option="RAW")
+        ws.append_row(gsheet_values, value_input_option="RAW")
         return True, "OK"
     except Exception as exc:
         return False, str(exc)
