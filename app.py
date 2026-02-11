@@ -1,21 +1,22 @@
-import streamlit as st
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Tuple, List
+import json
 import os
 import sqlite3
-import json
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
+
+import pandas as pd
+import streamlit as st
 
 try:
     import gspread
-    from gspread.exceptions import WorksheetNotFound
     from google.oauth2.service_account import Credentials
+    from gspread.exceptions import WorksheetNotFound
 except Exception:
     gspread = None
-    WorksheetNotFound = Exception
     Credentials = None
+    WorksheetNotFound = Exception
 
 pwd = os.environ.get("APP_PASSWORD", "")
 if pwd:
@@ -23,7 +24,7 @@ if pwd:
     if p != pwd:
         st.stop()
 
-st.set_page_config(page_title="AVC Hyperaigu – Délais Thrombolyse", layout="centered")
+st.set_page_config(page_title="AVC Hyperaigu - Délais Thrombolyse", layout="centered")
 
 DB_PATH = os.environ.get("APP_DB_PATH", "data/avc_delais.db")
 DEFAULT_GSHEET_ID = "1ZQMo6j6zJ9G0Pl-rZGh6Oa1wPyV7OSYNb_joSjRdRec"
@@ -51,74 +52,77 @@ SHEET_COLUMNS = [
     "exported_at",
 ]
 
-# -----------------------------
-# Helpers temps / corrections
-# -----------------------------
-def parse_dt(date_str: str, time_str: str) -> Optional[datetime]:
-    """
-    Parse date (YYYY-MM-DD) + time (HH:MM) into datetime.
-    Returns None if empty.
-    """
-    if not date_str or not time_str:
+EVENT_LABELS = {
+    "symptom_onset": "Début AVC / Dernière fois vue normale",
+    "arrival": "Arrivée",
+    "imaging": "Imagerie",
+    "needle": "Bolus rtPA",
+    "end_infusion": "Fin de perfusion",
+    "other": "Autre",
+}
+
+
+def parse_time_hhmm(value: str) -> Optional[time]:
+    raw = value.strip()
+    if not raw:
         return None
     try:
-        return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        return datetime.strptime(raw, "%H:%M").time()
     except ValueError:
         return None
 
-def ensure_monotonic(times: Dict[str, Optional[datetime]], order: List[str], max_backshift_hours: int = 24) -> Tuple[Dict[str, Optional[datetime]], List[str]]:
-    """
-    Tries to fix day-rollover errors:
-    - If an event is earlier than the previous event, assume it might be the next day (+24h).
-    - Applies iteratively along the expected order.
-    """
-    corrected = dict(times)
-    notes = []
-    prev_key = None
-    for key in order:
-        if corrected.get(key) is None:
-            prev_key = key
-            continue
-        # Find previous non-null
-        j = order.index(key) - 1
-        prev_dt = None
-        prev_name = None
-        while j >= 0:
-            pk = order[j]
-            if corrected.get(pk) is not None:
-                prev_dt = corrected[pk]
-                prev_name = pk
-                break
-            j -= 1
 
-        if prev_dt is None:
-            prev_key = key
+def build_datetimes_with_rollover(
+    base_date: date,
+    time_inputs: Dict[str, str],
+    event_order: List[str],
+) -> Tuple[Dict[str, Optional[datetime]], List[str], List[str]]:
+    parsed: Dict[str, Optional[time]] = {}
+    errors: List[str] = []
+
+    for key, value in time_inputs.items():
+        t = parse_time_hhmm(value)
+        if value.strip() and t is None:
+            errors.append(f"Format invalide pour '{EVENT_LABELS.get(key, key)}' (attendu HH:MM).")
+        parsed[key] = t
+
+    day_shift = 0
+    previous_dt: Optional[datetime] = None
+    previous_key: Optional[str] = None
+    resolved: Dict[str, Optional[datetime]] = {k: None for k in time_inputs.keys()}
+    notes: List[str] = []
+
+    for key in event_order:
+        t = parsed.get(key)
+        if t is None:
             continue
 
-        cur_dt = corrected[key]
-        if cur_dt < prev_dt:
-            # Candidate fix: add 24h until it's >= prev_dt, up to max_backshift_hours
-            tmp = cur_dt
-            n = 0
-            while tmp < prev_dt and n < (max_backshift_hours // 24 + 1):
-                tmp = tmp + timedelta(days=1)
-                n += 1
-            if tmp >= prev_dt:
-                corrected[key] = tmp
-                notes.append(f"🛠️ {key} semblait avant {prev_name} → +{n} jour(s) appliqué(s).")
-            else:
-                notes.append(f"⚠️ {key} < {prev_name} et correction automatique impossible.")
-        prev_key = key
+        current_dt = datetime.combine(base_date, t) + timedelta(days=day_shift)
 
-    return corrected, notes
+        if previous_dt is not None and current_dt < previous_dt:
+            while current_dt < previous_dt:
+                day_shift += 1
+                current_dt = datetime.combine(base_date, t) + timedelta(days=day_shift)
+            notes.append(
+                f"Passage minuit détecté: {EVENT_LABELS.get(previous_key, previous_key)} -> {EVENT_LABELS.get(key, key)} (+1 jour)."
+            )
+
+        resolved[key] = current_dt
+        previous_dt = current_dt
+        previous_key = key
+
+    return resolved, notes, errors
+
 
 def minutes(a: Optional[datetime], b: Optional[datetime]) -> Optional[int]:
     if a is None or b is None:
         return None
     return int((b - a).total_seconds() // 60)
 
+
 def fmt_dt(x: Optional[datetime]) -> str:
     return "" if x is None else x.strftime("%Y-%m-%d %H:%M")
+
 
 def get_db_connection() -> sqlite3.Connection:
     db_file = Path(DB_PATH)
@@ -126,6 +130,7 @@ def get_db_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(db_file, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db() -> None:
     with get_db_connection() as conn:
@@ -155,6 +160,7 @@ def init_db() -> None:
         )
         conn.commit()
 
+
 def build_record(row: Dict[str, object]) -> Dict[str, object]:
     return {
         "id": str(uuid4()),
@@ -165,20 +171,20 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
         "ts_needle": row.get("ts_needle", ""),
         "ts_end_infusion": row.get("ts_end_infusion", ""),
         "ts_other": row.get("ts_other", ""),
-        "odt_min": row.get("ODT (Onset→Door) min"),
-        "d2i_min": row.get("D2I (Door→Imaging) min"),
-        "d2n_min": row.get("D2N (Door→Needle) min"),
-        "i2n_min": row.get("I2N (Imaging→Needle) min"),
-        "onset_to_needle_min": row.get("Onset→Needle min"),
-        "needle_to_end_min": row.get("Needle→End min"),
-        "auto_fix_enabled": 1 if row.get("auto_fix_enabled", False) else 0,
+        "odt_min": row.get("odt_min"),
+        "d2i_min": row.get("d2i_min"),
+        "d2n_min": row.get("d2n_min"),
+        "i2n_min": row.get("i2n_min"),
+        "onset_to_needle_min": row.get("onset_to_needle_min"),
+        "needle_to_end_min": row.get("needle_to_end_min"),
+        "auto_fix_enabled": 1,
         "notes": row.get("notes", ""),
         "exported_at": row.get("exported_at", ""),
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-def save_patient_record_sqlite(record: Dict[str, object]) -> str:
 
+def save_patient_record_sqlite(record: Dict[str, object]) -> str:
     with get_db_connection() as conn:
         conn.execute(
             """
@@ -198,6 +204,7 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
 
     return str(record["id"])
 
+
 def _get_gsheet_creds_info() -> Optional[Dict]:
     if "google_service_account" in st.secrets:
         return dict(st.secrets["google_service_account"])
@@ -208,6 +215,7 @@ def _get_gsheet_creds_info() -> Optional[Dict]:
         except json.JSONDecodeError:
             return None
     return None
+
 
 def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, str]:
     if not GSHEET_ID:
@@ -227,6 +235,7 @@ def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, s
         creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
         client = gspread.authorize(creds)
         sheet = client.open_by_key(GSHEET_ID)
+
         try:
             ws = sheet.worksheet(GSHEET_WORKSHEET)
         except WorksheetNotFound:
@@ -240,6 +249,7 @@ def save_patient_record_google_sheet(record: Dict[str, object]) -> Tuple[bool, s
         return True, "OK"
     except Exception as exc:
         return False, str(exc)
+
 
 def load_recent_records(limit: int = 50) -> pd.DataFrame:
     with get_db_connection() as conn:
@@ -256,20 +266,18 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
         ).fetchall()
     return pd.DataFrame([dict(r) for r in rows])
 
+
 init_db()
 
 # -----------------------------
 # UI
 # -----------------------------
-st.title("AVC hyperaigu – délais thrombolyse (MVP)")
-st.caption("Saisie d’horodatages → corrections simples → calcul automatique des délais → export CSV.")
+st.title("AVC hyperaigu - délais thrombolyse")
+st.caption("Saisie simplifiée: une date initiale puis les heures uniquement.")
 
 with st.sidebar:
     st.header("Paramètres")
-    auto_fix = st.toggle("Corrections automatiques (jour qui change)", value=True)
-    st.write("Ordre logique attendu : symptômes → arrivée → imagerie → bolus → fin perfusion.")
-    st.divider()
-    st.write("Conseil : utiliser un identifiant pseudonymisé (pas de nom/prénom).")
+    st.write("Utiliser un identifiant pseudonymisé (pas de nom/prénom).")
     if GSHEET_ID:
         st.success("Google Sheets configuré")
     else:
@@ -278,121 +286,138 @@ with st.sidebar:
 st.subheader("Identifiant (optionnel)")
 case_id = st.text_input("Case ID (pseudonymisé)", value="")
 
-st.subheader("Horodatages")
-c1, c2 = st.columns(2)
+st.subheader("Recueil des horaires")
+reference_date = st.date_input("Date du début AVC ou de la dernière fois vue normale", value=date.today())
+reference_mode = st.radio(
+    "Point de départ",
+    options=["Heure début AVC connue", "Heure vue pour la dernière fois normale (LKW)"],
+    horizontal=True,
+)
 
-with c1:
-    d_sym = st.date_input("Date début symptômes (ou LKW)", value=None)
-    t_sym = st.text_input("Heure début symptômes (HH:MM)", value="", placeholder="ex: 08:15")
+label_reference_time = (
+    "Heure début AVC (HH:MM)"
+    if reference_mode == "Heure début AVC connue"
+    else "Heure dernière fois vue normale (HH:MM)"
+)
 
-    d_arr = st.date_input("Date arrivée (Door)", value=None)
-    t_arr = st.text_input("Heure arrivée (HH:MM)", value="", placeholder="ex: 09:02")
+t_symptom = st.text_input(label_reference_time, value="", placeholder="ex: 23:10")
 
-    d_img = st.date_input("Date imagerie (CT/MR)", value=None)
-    t_img = st.text_input("Heure imagerie (HH:MM)", value="", placeholder="ex: 09:20")
+col1, col2 = st.columns(2)
+with col1:
+    t_arrival = st.text_input("Heure arrivée (HH:MM)", value="", placeholder="ex: 23:55")
+    t_imaging = st.text_input("Heure imagerie (HH:MM)", value="", placeholder="ex: 00:20")
+with col2:
+    t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 01:05")
+    t_end = st.text_input("Heure fin perfusion (HH:MM)", value="", placeholder="ex: 02:05")
 
-with c2:
-    d_needle = st.date_input("Date bolus rtPA (Needle)", value=None)
-    t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 09:45")
+t_other = st.text_input("Heure autre (optionnel, HH:MM)", value="", placeholder="")
 
-    d_end = st.date_input("Date fin perfusion", value=None)
-    t_end = st.text_input("Heure fin perfusion (HH:MM)", value="", placeholder="ex: 10:45")
-
-    d_other = st.date_input("Date autre (optionnel)", value=None)
-    t_other = st.text_input("Heure autre (HH:MM)", value="", placeholder="")
-
-# Parse inputs
-times_raw = {
-    "symptom_onset": parse_dt(str(d_sym) if d_sym else "", t_sym.strip()),
-    "arrival":       parse_dt(str(d_arr) if d_arr else "", t_arr.strip()),
-    "imaging":       parse_dt(str(d_img) if d_img else "", t_img.strip()),
-    "needle":        parse_dt(str(d_needle) if d_needle else "", t_needle.strip()),
-    "end_infusion":  parse_dt(str(d_end) if d_end else "", t_end.strip()),
-    "other":         parse_dt(str(d_other) if d_other else "", t_other.strip()),
+time_inputs = {
+    "symptom_onset": t_symptom,
+    "arrival": t_arrival,
+    "imaging": t_imaging,
+    "needle": t_needle,
+    "end_infusion": t_end,
+    "other": t_other,
 }
 
-expected_order = ["symptom_onset", "arrival", "imaging", "needle", "end_infusion"]
+ordered_events = ["symptom_onset", "arrival", "imaging", "needle", "end_infusion", "other"]
+times_corr, rollover_notes, time_errors = build_datetimes_with_rollover(reference_date, time_inputs, ordered_events)
 
-# Apply correction
-if auto_fix:
-    times_corr, notes = ensure_monotonic(times_raw, expected_order)
-else:
-    times_corr, notes = times_raw, []
+if time_errors:
+    for err in time_errors:
+        st.error(err)
 
-st.subheader("Horodatages (après correction)")
-df_times = pd.DataFrame(
-    [{"event": k, "datetime": fmt_dt(v)} for k, v in times_corr.items() if k != "other"] +
-    ([{"event": "other", "datetime": fmt_dt(times_corr.get("other"))}] if times_corr.get("other") else [])
-)
-st.dataframe(df_times, use_container_width=True, hide_index=True)
+st.subheader("Horodatages résolus")
+rows_times = []
+for key in ordered_events:
+    if key == "other" and not times_corr.get("other"):
+        continue
+    rows_times.append({"Étape": EVENT_LABELS[key], "Date/heure": fmt_dt(times_corr.get(key))})
+st.dataframe(pd.DataFrame(rows_times), use_container_width=True, hide_index=True)
 
-if notes:
-    st.info("\n".join(notes))
+if rollover_notes:
+    st.info("\n".join(rollover_notes))
 
-# Compute metrics
 metrics = {
-    "ODT (Onset→Door) min": minutes(times_corr["symptom_onset"], times_corr["arrival"]),
-    "D2I (Door→Imaging) min": minutes(times_corr["arrival"], times_corr["imaging"]),
-    "D2N (Door→Needle) min": minutes(times_corr["arrival"], times_corr["needle"]),
-    "I2N (Imaging→Needle) min": minutes(times_corr["imaging"], times_corr["needle"]),
-    "Onset→Needle min": minutes(times_corr["symptom_onset"], times_corr["needle"]),
-    "Needle→End min": minutes(times_corr["needle"], times_corr["end_infusion"]),
+    "odt_min": minutes(times_corr["symptom_onset"], times_corr["arrival"]),
+    "d2i_min": minutes(times_corr["arrival"], times_corr["imaging"]),
+    "d2n_min": minutes(times_corr["arrival"], times_corr["needle"]),
+    "i2n_min": minutes(times_corr["imaging"], times_corr["needle"]),
+    "onset_to_needle_min": minutes(times_corr["symptom_onset"], times_corr["needle"]),
+    "needle_to_end_min": minutes(times_corr["needle"], times_corr["end_infusion"]),
+}
+
+metric_labels = {
+    "odt_min": "Debut AVC/LKW -> Arrivee (min)",
+    "d2i_min": "Arrivee -> Imagerie (min)",
+    "d2n_min": "Arrivee -> Bolus (min)",
+    "i2n_min": "Imagerie -> Bolus (min)",
+    "onset_to_needle_min": "Debut AVC/LKW -> Bolus (min)",
+    "needle_to_end_min": "Bolus -> Fin perfusion (min)",
 }
 
 st.subheader("Délais calculés")
-df_metrics = pd.DataFrame([{"metric": k, "value_min": v} for k, v in metrics.items()])
-st.dataframe(df_metrics, use_container_width=True, hide_index=True)
+metric_rows = [{"Délai": metric_labels[k], "Valeur (min)": v} for k, v in metrics.items()]
+st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
 
-# Simple plausibility checks
 st.subheader("Contrôles de cohérence")
 checks = []
-def add_check(name, ok, detail):
-    checks.append({"check": name, "status": "OK" if ok else "⚠️", "detail": detail})
 
-# Example thresholds (editable)
-D2N_TARGET = 60
-D2I_TARGET = 25
 
-d2n = metrics["D2N (Door→Needle) min"]
-d2i = metrics["D2I (Door→Imaging) min"]
+def add_check(name: str, ok: bool, detail: str) -> None:
+    checks.append({"Contrôle": name, "Statut": "OK" if ok else "À vérifier", "Détail": detail})
 
-if d2n is not None:
-    add_check("Door-to-Needle ≤ 60 min", d2n <= D2N_TARGET, f"{d2n} min")
+if metrics["d2n_min"] is not None:
+    add_check("Arrivée -> Bolus <= 60 min", metrics["d2n_min"] <= 60, f"{metrics['d2n_min']} min")
 else:
-    add_check("Door-to-Needle ≤ 60 min", False, "Horodatages incomplets")
+    add_check("Arrivée -> Bolus <= 60 min", False, "Horaires incomplets")
 
-if d2i is not None:
-    add_check("Door-to-Imaging ≤ 25 min", d2i <= D2I_TARGET, f"{d2i} min")
+if metrics["d2i_min"] is not None:
+    add_check("Arrivée -> Imagerie <= 25 min", metrics["d2i_min"] <= 25, f"{metrics['d2i_min']} min")
 else:
-    add_check("Door-to-Imaging ≤ 25 min", False, "Horodatages incomplets")
+    add_check("Arrivée -> Imagerie <= 25 min", False, "Horaires incomplets")
 
-# Monotonicity checks
 for a, b in [("arrival", "imaging"), ("imaging", "needle")]:
     if times_corr[a] and times_corr[b]:
-        add_check(f"{a} ≤ {b}", times_corr[a] <= times_corr[b], f"{fmt_dt(times_corr[a])} → {fmt_dt(times_corr[b])}")
+        add_check(
+            f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}",
+            times_corr[a] <= times_corr[b],
+            f"{fmt_dt(times_corr[a])} -> {fmt_dt(times_corr[b])}",
+        )
     else:
-        add_check(f"{a} ≤ {b}", False, "Horodatages incomplets")
+        add_check(f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}", False, "Horaires incomplets")
 
 st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
 
-# Export
 st.subheader("Export")
+notes = list(rollover_notes)
+notes.append(f"Point de départ: {reference_mode}")
 row = {
     "case_id": case_id,
-    **{f"ts_{k}": fmt_dt(v) for k, v in times_corr.items()},
-    **{k: v for k, v in metrics.items()},
-    "auto_fix_enabled": auto_fix,
+    "ts_symptom_onset": fmt_dt(times_corr.get("symptom_onset")),
+    "ts_arrival": fmt_dt(times_corr.get("arrival")),
+    "ts_imaging": fmt_dt(times_corr.get("imaging")),
+    "ts_needle": fmt_dt(times_corr.get("needle")),
+    "ts_end_infusion": fmt_dt(times_corr.get("end_infusion")),
+    "ts_other": fmt_dt(times_corr.get("other")),
+    **metrics,
+    "auto_fix_enabled": True,
     "notes": " | ".join(notes),
     "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
 }
-df_export = pd.DataFrame([row])
 
-csv = df_export.to_csv(index=False).encode("utf-8")
+csv = pd.DataFrame([row]).to_csv(index=False).encode("utf-8")
 st.download_button("Télécharger CSV (1 ligne)", data=csv, file_name="avc_delais_thrombolyse.csv", mime="text/csv")
 
 st.subheader("Sauvegarde serveur")
 st.caption("Enregistrement SQLite local + Google Sheets (si configuré).")
-if st.button("Enregistrer ce patient", type="primary"):
+
+can_save = not time_errors and bool(times_corr.get("symptom_onset"))
+if not can_save:
+    st.warning("Renseigner au minimum la date + heure de début AVC/LKW avec un format HH:MM valide.")
+
+if st.button("Enregistrer ce patient", type="primary", disabled=not can_save):
     record = build_record(row)
     record_id = save_patient_record_sqlite(record)
     st.success(f"Données enregistrées (SQLite). ID: {record_id}")
@@ -407,5 +432,22 @@ recent_records = load_recent_records(limit=20)
 if recent_records.empty:
     st.info("Aucun enregistrement sauvegardé pour le moment.")
 else:
-    st.write(f"{len(recent_records)} derniers enregistrements")
-    st.dataframe(recent_records, use_container_width=True, hide_index=True)
+    display_df = recent_records.rename(
+        columns={
+            "created_at": "Enregistré le",
+            "case_id": "Case ID",
+            "ts_symptom_onset": "Début AVC/LKW",
+            "ts_arrival": "Arrivée",
+            "ts_imaging": "Imagerie",
+            "ts_needle": "Bolus",
+            "ts_end_infusion": "Fin perfusion",
+            "odt_min": "Début->Arrivée (min)",
+            "d2i_min": "Arrivée->Imagerie (min)",
+            "d2n_min": "Arrivée->Bolus (min)",
+            "i2n_min": "Imagerie->Bolus (min)",
+            "onset_to_needle_min": "Début->Bolus (min)",
+            "needle_to_end_min": "Bolus->Fin (min)",
+        }
+    )
+    st.write(f"{len(display_df)} derniers enregistrements")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
