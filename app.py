@@ -45,6 +45,7 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("ts_neuro_call", "Heure appel neurologue de garde"),
     ("ts_irm_arrival", "Heure arrivée IRM"),
     ("ts_imaging_start", "Heure début IRM/imagerie"),
+    ("ts_imaging_end", "Heure fin IRM/imagerie"),
     ("ts_needle", "Heure bolus rtPA"),
     ("dtn_min", "Délai arrivée->bolus (DTN) (min)"),
     ("door_to_imaging_min", "Délai arrivée->début imagerie (min)"),
@@ -68,6 +69,7 @@ EVENT_LABELS = {
     "neuro_call": "Appel neurologue de garde",
     "irm_arrival": "Arrivée IRM",
     "imaging_start": "Début IRM/imagerie",
+    "imaging_end": "Fin IRM/imagerie",
     "needle": "Bolus rtPA",
 }
 
@@ -234,7 +236,7 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
         "ts_irm_arrival": row.get("ts_irm_arrival", ""),
         "ts_imaging_start": row.get("ts_imaging_start", ""),
         "ts_imaging_arrival": row.get("ts_imaging_start", ""),
-        "ts_imaging_end": "",
+        "ts_imaging_end": row.get("ts_imaging_end", ""),
         "ts_needle": row.get("ts_needle", ""),
         "dtn_min": row.get("dtn_min"),
         "door_to_imaging_min": row.get("door_to_imaging_min"),
@@ -351,7 +353,7 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
                 id, created_at, case_id, care_pathway, onset_source,
                 ts_onset_known, ts_onset_unknown, ts_onset_reference,
                 ts_samu_call, ts_ed_arrival, ts_neuro_call,
-                ts_irm_arrival, ts_imaging_start, ts_needle,
+                ts_irm_arrival, ts_imaging_start, ts_imaging_end, ts_needle,
                 dtn_min, door_to_imaging_min, imaging_to_needle_min,
                 samu_to_arrival_min, samu_to_needle_min, internal_alert_to_arrival_min, internal_alert_to_needle_min,
                 onset_to_needle_min, commentaire, auto_correction_applied
@@ -426,6 +428,7 @@ if care_pathway == "AVC extra-hospitalier":
     t_samu_call = st.text_input("Heure appel SAMU (HH:MM)", value="", placeholder="ex: 09:00")
     t_irm_arrival = st.text_input("Heure arrivée IRM (HH:MM)", value="", placeholder="ex: 09:35")
     t_imaging_start = st.text_input("Heure début IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:40")
+    t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
     t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
 
     time_inputs = {
@@ -433,13 +436,15 @@ if care_pathway == "AVC extra-hospitalier":
         "samu_call": t_samu_call,
         "irm_arrival": t_irm_arrival,
         "imaging_start": t_imaging_start,
+        "imaging_end": t_imaging_end,
         "needle": t_needle,
     }
-    ordered_events = ["onset_reference", "samu_call", "irm_arrival", "imaging_start", "needle"]
+    ordered_events = ["onset_reference", "samu_call", "irm_arrival", "imaging_start", "imaging_end", "needle"]
 else:
     t_ed_arrival = st.text_input("Heure arrivée urgences (HH:MM)", value="", placeholder="ex: 09:05")
     t_neuro_call = st.text_input("Heure alerte interne (appel neurologue) (HH:MM)", value="", placeholder="ex: 09:10")
     t_imaging_start = st.text_input("Heure début IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
+    t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
     t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
 
     time_inputs = {
@@ -447,9 +452,10 @@ else:
         "ed_arrival": t_ed_arrival,
         "neuro_call": t_neuro_call,
         "imaging_start": t_imaging_start,
+        "imaging_end": t_imaging_end,
         "needle": t_needle,
     }
-    ordered_events = ["onset_reference", "ed_arrival", "neuro_call", "imaging_start", "needle"]
+    ordered_events = ["onset_reference", "ed_arrival", "neuro_call", "imaging_start", "imaging_end", "needle"]
 
 resolved_times, rollover_notes, time_errors = build_datetimes_with_rollover(reference_date, time_inputs, ordered_events)
 all_errors = manual_errors + time_errors
@@ -587,6 +593,7 @@ row = {
     "ts_neuro_call": fmt_dt(resolved_times.get("neuro_call")),
     "ts_irm_arrival": fmt_dt(resolved_times.get("irm_arrival")),
     "ts_imaging_start": fmt_dt(resolved_times.get("imaging_start")),
+    "ts_imaging_end": fmt_dt(resolved_times.get("imaging_end")),
     "ts_needle": fmt_dt(resolved_times.get("needle")),
     "commentaire": commentaire.strip(),
     **metrics,
@@ -634,6 +641,7 @@ else:
             "ts_neuro_call": "Appel neuro",
             "ts_irm_arrival": "Arrivée IRM",
             "ts_imaging_start": "Début IRM",
+            "ts_imaging_end": "Fin IRM",
             "ts_needle": "Bolus",
             "dtn_min": "Arrivée->Bolus (min)",
             "door_to_imaging_min": "Arrivée->Début imagerie (min)",
