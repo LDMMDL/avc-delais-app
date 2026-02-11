@@ -47,13 +47,13 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("ts_imaging_arrival", "Heure arrivée IRM/imagerie"),
     ("ts_imaging_end", "Heure fin IRM/imagerie"),
     ("ts_needle", "Heure bolus rtPA"),
-    ("samu_to_irm_min", "Délai appel SAMU->arrivée IRM (min)"),
-    ("ed_to_neuro_min", "Délai arrivée urgences->appel neurologue (min)"),
-    ("ed_to_irm_min", "Délai arrivée urgences->arrivée IRM (min)"),
-    ("neuro_to_irm_min", "Délai appel neurologue->arrivée IRM (min)"),
-    ("imaging_duration_min", "Durée IRM/imagerie (min)"),
-    ("imaging_end_to_needle_min", "Délai fin IRM/imagerie->bolus (min)"),
-    ("neuro_notified_to_needle_min", "Délai neurologue prévenu/patient sur site->bolus (min)"),
+    ("dtn_min", "Délai arrivée->bolus (DTN) (min)"),
+    ("door_to_imaging_min", "Délai arrivée->début imagerie (min)"),
+    ("imaging_to_needle_min", "Délai début imagerie->bolus (min)"),
+    ("samu_to_arrival_min", "Délai appel SAMU->arrivée (min)"),
+    ("samu_to_needle_min", "Délai appel SAMU->bolus (min)"),
+    ("internal_alert_to_arrival_min", "Délai alerte interne->arrivée (min)"),
+    ("internal_alert_to_needle_min", "Délai alerte interne->bolus (min)"),
     ("onset_to_needle_min", "Délai début retenu->bolus (min)"),
     ("auto_fix_enabled", "Correction automatique activée"),
     ("auto_correction_applied", "Correction automatique appliquée"),
@@ -166,13 +166,13 @@ def init_db() -> None:
                 ts_imaging_arrival TEXT,
                 ts_imaging_end TEXT,
                 ts_needle TEXT,
-                samu_to_irm_min INTEGER,
-                ed_to_neuro_min INTEGER,
-                ed_to_irm_min INTEGER,
-                neuro_to_irm_min INTEGER,
-                imaging_duration_min INTEGER,
-                imaging_end_to_needle_min INTEGER,
-                neuro_notified_to_needle_min INTEGER,
+                dtn_min INTEGER,
+                door_to_imaging_min INTEGER,
+                imaging_to_needle_min INTEGER,
+                samu_to_arrival_min INTEGER,
+                samu_to_needle_min INTEGER,
+                internal_alert_to_arrival_min INTEGER,
+                internal_alert_to_needle_min INTEGER,
                 onset_to_needle_min INTEGER,
                 auto_fix_enabled INTEGER NOT NULL,
                 auto_correction_applied INTEGER NOT NULL,
@@ -196,13 +196,13 @@ def init_db() -> None:
             "ts_imaging_arrival": "TEXT",
             "ts_imaging_end": "TEXT",
             "ts_needle": "TEXT",
-            "samu_to_irm_min": "INTEGER",
-            "ed_to_neuro_min": "INTEGER",
-            "ed_to_irm_min": "INTEGER",
-            "neuro_to_irm_min": "INTEGER",
-            "imaging_duration_min": "INTEGER",
-            "imaging_end_to_needle_min": "INTEGER",
-            "neuro_notified_to_needle_min": "INTEGER",
+            "dtn_min": "INTEGER",
+            "door_to_imaging_min": "INTEGER",
+            "imaging_to_needle_min": "INTEGER",
+            "samu_to_arrival_min": "INTEGER",
+            "samu_to_needle_min": "INTEGER",
+            "internal_alert_to_arrival_min": "INTEGER",
+            "internal_alert_to_needle_min": "INTEGER",
             "onset_to_needle_min": "INTEGER",
             "auto_correction_applied": "INTEGER",
         }
@@ -228,13 +228,13 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
         "ts_imaging_arrival": row.get("ts_imaging_arrival", ""),
         "ts_imaging_end": row.get("ts_imaging_end", ""),
         "ts_needle": row.get("ts_needle", ""),
-        "samu_to_irm_min": row.get("samu_to_irm_min"),
-        "ed_to_neuro_min": row.get("ed_to_neuro_min"),
-        "ed_to_irm_min": row.get("ed_to_irm_min"),
-        "neuro_to_irm_min": row.get("neuro_to_irm_min"),
-        "imaging_duration_min": row.get("imaging_duration_min"),
-        "imaging_end_to_needle_min": row.get("imaging_end_to_needle_min"),
-        "neuro_notified_to_needle_min": row.get("neuro_notified_to_needle_min"),
+        "dtn_min": row.get("dtn_min"),
+        "door_to_imaging_min": row.get("door_to_imaging_min"),
+        "imaging_to_needle_min": row.get("imaging_to_needle_min"),
+        "samu_to_arrival_min": row.get("samu_to_arrival_min"),
+        "samu_to_needle_min": row.get("samu_to_needle_min"),
+        "internal_alert_to_arrival_min": row.get("internal_alert_to_arrival_min"),
+        "internal_alert_to_needle_min": row.get("internal_alert_to_needle_min"),
         "onset_to_needle_min": row.get("onset_to_needle_min"),
         "auto_fix_enabled": 1,
         "auto_correction_applied": 1 if row.get("auto_correction_applied", False) else 0,
@@ -253,16 +253,18 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
                 ts_onset_known, ts_onset_unknown, ts_onset_reference,
                 ts_samu_call, ts_ed_arrival, ts_neuro_call,
                 ts_imaging_arrival, ts_imaging_end, ts_needle,
-                samu_to_irm_min, ed_to_neuro_min, ed_to_irm_min, neuro_to_irm_min,
-                imaging_duration_min, imaging_end_to_needle_min, neuro_notified_to_needle_min, onset_to_needle_min,
+                dtn_min, door_to_imaging_min, imaging_to_needle_min,
+                samu_to_arrival_min, samu_to_needle_min, internal_alert_to_arrival_min, internal_alert_to_needle_min,
+                onset_to_needle_min,
                 auto_fix_enabled, auto_correction_applied, notes, exported_at, created_at
             ) VALUES (
                 :id, :case_id, :care_pathway, :onset_source,
                 :ts_onset_known, :ts_onset_unknown, :ts_onset_reference,
                 :ts_samu_call, :ts_ed_arrival, :ts_neuro_call,
                 :ts_imaging_arrival, :ts_imaging_end, :ts_needle,
-                :samu_to_irm_min, :ed_to_neuro_min, :ed_to_irm_min, :neuro_to_irm_min,
-                :imaging_duration_min, :imaging_end_to_needle_min, :neuro_notified_to_needle_min, :onset_to_needle_min,
+                :dtn_min, :door_to_imaging_min, :imaging_to_needle_min,
+                :samu_to_arrival_min, :samu_to_needle_min, :internal_alert_to_arrival_min, :internal_alert_to_needle_min,
+                :onset_to_needle_min,
                 :auto_fix_enabled, :auto_correction_applied, :notes, :exported_at, :created_at
             )
             """,
@@ -341,8 +343,9 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
                 ts_onset_known, ts_onset_unknown, ts_onset_reference,
                 ts_samu_call, ts_ed_arrival, ts_neuro_call,
                 ts_imaging_arrival, ts_imaging_end, ts_needle,
-                samu_to_irm_min, ed_to_neuro_min, ed_to_irm_min, neuro_to_irm_min,
-                imaging_duration_min, imaging_end_to_needle_min, neuro_notified_to_needle_min, onset_to_needle_min, auto_correction_applied
+                dtn_min, door_to_imaging_min, imaging_to_needle_min,
+                samu_to_arrival_min, samu_to_needle_min, internal_alert_to_arrival_min, internal_alert_to_needle_min,
+                onset_to_needle_min, auto_correction_applied
             FROM patient_records
             ORDER BY created_at DESC
             LIMIT ?
@@ -430,7 +433,7 @@ if care_pathway == "AVC extra-hospitalier":
     ordered_events = ["onset_reference", "samu_call", "imaging_arrival", "imaging_end", "needle"]
 else:
     t_ed_arrival = st.text_input("Heure arrivée urgences (HH:MM)", value="", placeholder="ex: 09:05")
-    t_neuro_call = st.text_input("Heure appel neurologue de garde (HH:MM)", value="", placeholder="ex: 09:10")
+    t_neuro_call = st.text_input("Heure alerte interne (appel neurologue) (HH:MM)", value="", placeholder="ex: 09:10")
     t_imaging_arrival = st.text_input("Heure arrivée IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:35")
     t_imaging_end = st.text_input("Heure fin IRM/imagerie (HH:MM)", value="", placeholder="ex: 09:55")
     t_needle = st.text_input("Heure bolus rtPA (HH:MM)", value="", placeholder="ex: 10:05")
@@ -458,38 +461,54 @@ if onset_notes:
 if rollover_notes:
     st.info("Une correction automatique de date a été appliquée (passage minuit).")
 
+arrival_dt = resolved_times.get("imaging_arrival") if care_pathway == "AVC extra-hospitalier" else resolved_times.get("ed_arrival")
+imaging_start_dt = resolved_times.get("imaging_arrival")
+needle_dt = resolved_times.get("needle")
+internal_alert_dt = resolved_times.get("neuro_call") if care_pathway == "AVC intra-hospitalier" else None
+samu_call_dt = resolved_times.get("samu_call") if care_pathway == "AVC extra-hospitalier" else None
+
 metrics = {
-    "samu_to_irm_min": minutes(resolved_times.get("samu_call"), resolved_times.get("imaging_arrival")),
-    "ed_to_neuro_min": minutes(resolved_times.get("ed_arrival"), resolved_times.get("neuro_call")),
-    "ed_to_irm_min": minutes(resolved_times.get("ed_arrival"), resolved_times.get("imaging_arrival")),
-    "neuro_to_irm_min": minutes(resolved_times.get("neuro_call"), resolved_times.get("imaging_arrival")),
-    "imaging_duration_min": minutes(resolved_times.get("imaging_arrival"), resolved_times.get("imaging_end")),
-    "imaging_end_to_needle_min": minutes(resolved_times.get("imaging_end"), resolved_times.get("needle")),
-    "neuro_notified_to_needle_min": (
-        minutes(resolved_times.get("imaging_arrival"), resolved_times.get("needle"))
-        if care_pathway == "AVC extra-hospitalier"
-        else minutes(resolved_times.get("neuro_call"), resolved_times.get("needle"))
-    ),
-    "onset_to_needle_min": minutes(resolved_times.get("onset_reference"), resolved_times.get("needle")),
+    "dtn_min": minutes(arrival_dt, needle_dt),
+    "door_to_imaging_min": minutes(arrival_dt, imaging_start_dt),
+    "imaging_to_needle_min": minutes(imaging_start_dt, needle_dt),
+    "samu_to_arrival_min": minutes(samu_call_dt, arrival_dt),
+    "samu_to_needle_min": minutes(samu_call_dt, needle_dt),
+    "internal_alert_to_arrival_min": minutes(internal_alert_dt, arrival_dt),
+    "internal_alert_to_needle_min": minutes(internal_alert_dt, needle_dt),
+    "onset_to_needle_min": minutes(resolved_times.get("onset_reference"), needle_dt),
 }
 
 metric_labels = {
-    "samu_to_irm_min": "Appel SAMU -> Arrivée IRM (min)",
-    "ed_to_neuro_min": "Arrivée urgences -> Appel neurologue (min)",
-    "ed_to_irm_min": "Arrivée urgences -> Arrivée IRM (min)",
-    "neuro_to_irm_min": "Appel neurologue -> Arrivée IRM (min)",
-    "imaging_duration_min": "Durée IRM/imagerie (min)",
-    "imaging_end_to_needle_min": "Fin IRM/imagerie -> Bolus (min)",
-    "neuro_notified_to_needle_min": "Neurologue prévenu/patient sur site -> Bolus (min)",
-    "onset_to_needle_min": "Début retenu -> Bolus (min)",
+    "dtn_min": "Arrivée -> Bolus (DTN) (min)",
+    "door_to_imaging_min": "Arrivée -> Début imagerie (min)",
+    "imaging_to_needle_min": "Début imagerie -> Bolus (min)",
+    "samu_to_arrival_min": "Appel SAMU -> Arrivée (min)",
+    "samu_to_needle_min": "Appel SAMU -> Bolus (min)",
+    "internal_alert_to_arrival_min": "Alerte interne -> Arrivée (min)",
+    "internal_alert_to_needle_min": "Alerte interne -> Bolus (min)",
+    "onset_to_needle_min": "Début symptômes/dernière fois vue normale -> Bolus (min)",
 }
 
 st.subheader("Délais calculés")
 metric_rows = []
 if care_pathway == "AVC extra-hospitalier":
-    important_delay_keys = ["samu_to_irm_min", "neuro_notified_to_needle_min", "onset_to_needle_min"]
+    important_delay_keys = [
+        "dtn_min",
+        "door_to_imaging_min",
+        "imaging_to_needle_min",
+        "samu_to_arrival_min",
+        "samu_to_needle_min",
+        "onset_to_needle_min",
+    ]
 else:
-    important_delay_keys = ["ed_to_neuro_min", "ed_to_irm_min", "neuro_to_irm_min", "neuro_notified_to_needle_min", "onset_to_needle_min"]
+    important_delay_keys = [
+        "dtn_min",
+        "door_to_imaging_min",
+        "imaging_to_needle_min",
+        "internal_alert_to_arrival_min",
+        "internal_alert_to_needle_min",
+        "onset_to_needle_min",
+    ]
 for key in important_delay_keys:
     label = metric_labels[key]
     if metrics[key] is not None:
@@ -498,6 +517,53 @@ if metric_rows:
     st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
 else:
     st.info("Délais non calculables avec les horaires saisis.")
+
+st.subheader("Performance")
+dtn = metrics.get("dtn_min")
+if dtn is not None:
+    if dtn <= 30:
+        st.success(f"1️⃣ DTN excellent: {dtn} min (niveau centre expert 20-30 min).")
+    elif dtn <= 45:
+        st.success(f"1️⃣ DTN performant: {dtn} min (médiane équipe performante 30-45 min).")
+    elif dtn <= 60:
+        st.info(f"1️⃣ DTN dans l'objectif recommandé: {dtn} min (<= 60 min).")
+    else:
+        st.warning(f"1️⃣ DTN au-dessus de l'objectif: {dtn} min (> 60 min).")
+
+d2i = metrics.get("door_to_imaging_min")
+if d2i is not None:
+    if d2i < 20:
+        st.success(f"2️⃣ Arrivée->Imagerie très fluide: {d2i} min (< 20 min).")
+    elif d2i <= 30:
+        st.info(f"2️⃣ Arrivée->Imagerie conforme: {d2i} min (<= 20-30 min).")
+    else:
+        st.warning(f"2️⃣ Arrivée->Imagerie lente: {d2i} min (> 30 min).")
+
+i2n = metrics.get("imaging_to_needle_min")
+if i2n is not None:
+    if i2n <= 25:
+        st.success(f"2️⃣ Imagerie->Bolus optimisé: {i2n} min (15-25 min).")
+    elif i2n <= 30:
+        st.info(f"2️⃣ Imagerie->Bolus conforme: {i2n} min (<= 30 min).")
+    else:
+        st.warning(f"2️⃣ Imagerie->Bolus à améliorer: {i2n} min (> 30 min).")
+
+if care_pathway == "AVC extra-hospitalier":
+    s2n = metrics.get("samu_to_needle_min")
+    if s2n is not None:
+        if s2n < 120:
+            st.success(f"3️⃣ Extra-hospitalier SAMU->Bolus: {s2n} min (< 120 min).")
+        else:
+            st.info(f"3️⃣ Extra-hospitalier SAMU->Bolus: {s2n} min (dépend du délai symptomatique initial).")
+
+o2n = metrics.get("onset_to_needle_min")
+if o2n is not None:
+    if o2n <= 150:
+        st.success(f"4️⃣ Délai global excellent: {o2n} min (< 120-150 min).")
+    elif o2n <= 270:
+        st.info(f"4️⃣ Délai global dans la fenêtre standard: {o2n} min (<= 4h30).")
+    else:
+        st.warning(f"4️⃣ Délai global hors fenêtre standard: {o2n} min (> 4h30).")
 
 st.subheader("Export")
 notes = list(rollover_notes)
@@ -565,13 +631,13 @@ else:
             "ts_imaging_arrival": "Arrivée IRM",
             "ts_imaging_end": "Fin IRM",
             "ts_needle": "Bolus",
-            "samu_to_irm_min": "SAMU->IRM (min)",
-            "ed_to_neuro_min": "Urgences->Neuro (min)",
-            "ed_to_irm_min": "Urgences->IRM (min)",
-            "neuro_to_irm_min": "Neuro->IRM (min)",
-            "imaging_duration_min": "Durée IRM (min)",
-            "imaging_end_to_needle_min": "Fin IRM->Bolus (min)",
-            "neuro_notified_to_needle_min": "Neuro prévenu/site->Bolus (min)",
+            "dtn_min": "Arrivée->Bolus (min)",
+            "door_to_imaging_min": "Arrivée->Début imagerie (min)",
+            "imaging_to_needle_min": "Début imagerie->Bolus (min)",
+            "samu_to_arrival_min": "SAMU->Arrivée (min)",
+            "samu_to_needle_min": "SAMU->Bolus (min)",
+            "internal_alert_to_arrival_min": "Alerte interne->Arrivée (min)",
+            "internal_alert_to_needle_min": "Alerte interne->Bolus (min)",
             "onset_to_needle_min": "Début->Bolus (min)",
             "auto_correction_applied": "Correction auto appliquée",
         }
