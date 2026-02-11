@@ -53,8 +53,10 @@ GSHEET_COLUMNS: List[Tuple[str, str]] = [
     ("neuro_to_irm_min", "Délai appel neurologue->arrivée IRM (min)"),
     ("imaging_duration_min", "Durée IRM/imagerie (min)"),
     ("imaging_end_to_needle_min", "Délai fin IRM/imagerie->bolus (min)"),
+    ("neuro_notified_to_needle_min", "Délai neurologue prévenu/patient sur site->bolus (min)"),
     ("onset_to_needle_min", "Délai début retenu->bolus (min)"),
     ("auto_fix_enabled", "Correction automatique activée"),
+    ("auto_correction_applied", "Correction automatique appliquée"),
     ("notes", "Notes"),
     ("exported_at", "Date export"),
 ]
@@ -170,8 +172,10 @@ def init_db() -> None:
                 neuro_to_irm_min INTEGER,
                 imaging_duration_min INTEGER,
                 imaging_end_to_needle_min INTEGER,
+                neuro_notified_to_needle_min INTEGER,
                 onset_to_needle_min INTEGER,
                 auto_fix_enabled INTEGER NOT NULL,
+                auto_correction_applied INTEGER NOT NULL,
                 notes TEXT,
                 exported_at TEXT,
                 created_at TEXT NOT NULL
@@ -198,7 +202,9 @@ def init_db() -> None:
             "neuro_to_irm_min": "INTEGER",
             "imaging_duration_min": "INTEGER",
             "imaging_end_to_needle_min": "INTEGER",
+            "neuro_notified_to_needle_min": "INTEGER",
             "onset_to_needle_min": "INTEGER",
+            "auto_correction_applied": "INTEGER",
         }
         for col_name, col_type in required_cols.items():
             if col_name not in existing_cols:
@@ -228,8 +234,10 @@ def build_record(row: Dict[str, object]) -> Dict[str, object]:
         "neuro_to_irm_min": row.get("neuro_to_irm_min"),
         "imaging_duration_min": row.get("imaging_duration_min"),
         "imaging_end_to_needle_min": row.get("imaging_end_to_needle_min"),
+        "neuro_notified_to_needle_min": row.get("neuro_notified_to_needle_min"),
         "onset_to_needle_min": row.get("onset_to_needle_min"),
         "auto_fix_enabled": 1,
+        "auto_correction_applied": 1 if row.get("auto_correction_applied", False) else 0,
         "notes": row.get("notes", ""),
         "exported_at": row.get("exported_at", ""),
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -246,16 +254,16 @@ def save_patient_record_sqlite(record: Dict[str, object]) -> str:
                 ts_samu_call, ts_ed_arrival, ts_neuro_call,
                 ts_imaging_arrival, ts_imaging_end, ts_needle,
                 samu_to_irm_min, ed_to_neuro_min, ed_to_irm_min, neuro_to_irm_min,
-                imaging_duration_min, imaging_end_to_needle_min, onset_to_needle_min,
-                auto_fix_enabled, notes, exported_at, created_at
+                imaging_duration_min, imaging_end_to_needle_min, neuro_notified_to_needle_min, onset_to_needle_min,
+                auto_fix_enabled, auto_correction_applied, notes, exported_at, created_at
             ) VALUES (
                 :id, :case_id, :care_pathway, :onset_source,
                 :ts_onset_known, :ts_onset_unknown, :ts_onset_reference,
                 :ts_samu_call, :ts_ed_arrival, :ts_neuro_call,
                 :ts_imaging_arrival, :ts_imaging_end, :ts_needle,
                 :samu_to_irm_min, :ed_to_neuro_min, :ed_to_irm_min, :neuro_to_irm_min,
-                :imaging_duration_min, :imaging_end_to_needle_min, :onset_to_needle_min,
-                :auto_fix_enabled, :notes, :exported_at, :created_at
+                :imaging_duration_min, :imaging_end_to_needle_min, :neuro_notified_to_needle_min, :onset_to_needle_min,
+                :auto_fix_enabled, :auto_correction_applied, :notes, :exported_at, :created_at
             )
             """,
             record,
@@ -334,7 +342,7 @@ def load_recent_records(limit: int = 50) -> pd.DataFrame:
                 ts_samu_call, ts_ed_arrival, ts_neuro_call,
                 ts_imaging_arrival, ts_imaging_end, ts_needle,
                 samu_to_irm_min, ed_to_neuro_min, ed_to_irm_min, neuro_to_irm_min,
-                imaging_duration_min, imaging_end_to_needle_min, onset_to_needle_min
+                imaging_duration_min, imaging_end_to_needle_min, neuro_notified_to_needle_min, onset_to_needle_min, auto_correction_applied
             FROM patient_records
             ORDER BY created_at DESC
             LIMIT ?
@@ -447,12 +455,8 @@ if all_errors:
 if onset_notes:
     st.info("\n".join(onset_notes))
 
-st.subheader("Horodatages résolus")
-timeline_rows = [{"Étape": EVENT_LABELS[k], "Date/heure": fmt_dt(resolved_times.get(k))} for k in ordered_events]
-st.dataframe(pd.DataFrame(timeline_rows), use_container_width=True, hide_index=True)
-
 if rollover_notes:
-    st.info("\n".join(rollover_notes))
+    st.info("Une correction automatique de date a été appliquée (passage minuit).")
 
 metrics = {
     "samu_to_irm_min": minutes(resolved_times.get("samu_call"), resolved_times.get("imaging_arrival")),
@@ -461,6 +465,11 @@ metrics = {
     "neuro_to_irm_min": minutes(resolved_times.get("neuro_call"), resolved_times.get("imaging_arrival")),
     "imaging_duration_min": minutes(resolved_times.get("imaging_arrival"), resolved_times.get("imaging_end")),
     "imaging_end_to_needle_min": minutes(resolved_times.get("imaging_end"), resolved_times.get("needle")),
+    "neuro_notified_to_needle_min": (
+        minutes(resolved_times.get("imaging_arrival"), resolved_times.get("needle"))
+        if care_pathway == "AVC extra-hospitalier"
+        else minutes(resolved_times.get("neuro_call"), resolved_times.get("needle"))
+    ),
     "onset_to_needle_min": minutes(resolved_times.get("onset_reference"), resolved_times.get("needle")),
 }
 
@@ -471,49 +480,24 @@ metric_labels = {
     "neuro_to_irm_min": "Appel neurologue -> Arrivée IRM (min)",
     "imaging_duration_min": "Durée IRM/imagerie (min)",
     "imaging_end_to_needle_min": "Fin IRM/imagerie -> Bolus (min)",
+    "neuro_notified_to_needle_min": "Neurologue prévenu/patient sur site -> Bolus (min)",
     "onset_to_needle_min": "Début retenu -> Bolus (min)",
 }
 
 st.subheader("Délais calculés")
 metric_rows = []
-for key, label in metric_labels.items():
+if care_pathway == "AVC extra-hospitalier":
+    important_delay_keys = ["samu_to_irm_min", "neuro_notified_to_needle_min", "onset_to_needle_min"]
+else:
+    important_delay_keys = ["ed_to_neuro_min", "ed_to_irm_min", "neuro_to_irm_min", "neuro_notified_to_needle_min", "onset_to_needle_min"]
+for key in important_delay_keys:
+    label = metric_labels[key]
     if metrics[key] is not None:
         metric_rows.append({"Délai": label, "Valeur (min)": metrics[key]})
 if metric_rows:
     st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
 else:
     st.info("Délais non calculables avec les horaires saisis.")
-
-st.subheader("Contrôles de cohérence")
-checks: List[Dict[str, str]] = []
-
-
-def add_check(name: str, ok: bool, detail: str) -> None:
-    checks.append({"Contrôle": name, "Statut": "OK" if ok else "À vérifier", "Détail": detail})
-
-if care_pathway == "AVC extra-hospitalier":
-    for a, b in [("samu_call", "imaging_arrival"), ("imaging_arrival", "imaging_end"), ("imaging_end", "needle")]:
-        if resolved_times.get(a) and resolved_times.get(b):
-            add_check(
-                f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}",
-                resolved_times[a] <= resolved_times[b],
-                f"{fmt_dt(resolved_times[a])} -> {fmt_dt(resolved_times[b])}",
-            )
-        else:
-            add_check(f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}", False, "Horaires incomplets")
-else:
-    for a, b in [("ed_arrival", "neuro_call"), ("neuro_call", "imaging_arrival"), ("imaging_arrival", "imaging_end"), ("imaging_end", "needle")]:
-        if resolved_times.get(a) and resolved_times.get(b):
-            add_check(
-                f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}",
-                resolved_times[a] <= resolved_times[b],
-                f"{fmt_dt(resolved_times[a])} -> {fmt_dt(resolved_times[b])}",
-            )
-        else:
-            add_check(f"{EVENT_LABELS[a]} <= {EVENT_LABELS[b]}", False, "Horaires incomplets")
-
-if checks:
-    st.dataframe(pd.DataFrame(checks), use_container_width=True, hide_index=True)
 
 st.subheader("Export")
 notes = list(rollover_notes)
@@ -536,6 +520,7 @@ row = {
     "ts_needle": fmt_dt(resolved_times.get("needle")),
     **metrics,
     "auto_fix_enabled": True,
+    "auto_correction_applied": bool(rollover_notes),
     "notes": " | ".join(notes),
     "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
 }
@@ -586,7 +571,9 @@ else:
             "neuro_to_irm_min": "Neuro->IRM (min)",
             "imaging_duration_min": "Durée IRM (min)",
             "imaging_end_to_needle_min": "Fin IRM->Bolus (min)",
+            "neuro_notified_to_needle_min": "Neuro prévenu/site->Bolus (min)",
             "onset_to_needle_min": "Début->Bolus (min)",
+            "auto_correction_applied": "Correction auto appliquée",
         }
     )
     st.write(f"{len(display_df)} derniers enregistrements")
