@@ -498,35 +498,6 @@ metric_labels = {
     "onset_to_needle_min": "Début symptômes/dernière fois vue normale -> Bolus (min)",
 }
 
-st.subheader("Délais calculés")
-metric_rows = []
-if care_pathway == "AVC extra-hospitalier":
-    important_delay_keys = [
-        "dtn_min",
-        "door_to_imaging_min",
-        "imaging_to_needle_min",
-        "samu_to_arrival_min",
-        "samu_to_needle_min",
-        "onset_to_needle_min",
-    ]
-else:
-    important_delay_keys = [
-        "dtn_min",
-        "door_to_imaging_min",
-        "imaging_to_needle_min",
-        "internal_alert_to_arrival_min",
-        "internal_alert_to_needle_min",
-        "onset_to_needle_min",
-    ]
-for key in important_delay_keys:
-    label = metric_labels[key]
-    if metrics[key] is not None:
-        metric_rows.append({"Délai": label, "Valeur (min)": metrics[key]})
-if metric_rows:
-    st.dataframe(pd.DataFrame(metric_rows), use_container_width=True, hide_index=True)
-else:
-    st.info("Délais non calculables avec les horaires saisis.")
-
 st.subheader("Performance")
 dtn = metrics.get("dtn_min")
 if dtn is not None:
